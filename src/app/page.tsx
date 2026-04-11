@@ -1,65 +1,137 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { buttonVariants } from "@/components/ui/button";
+import { AUTH_DISABLED_FOR_DEV } from "@/lib/dev-auth";
+import { createClient, testSupabaseConnection } from "@/lib/supabase";
+import { cn } from "@/lib/utils";
+
+function HomeLanding({
+  conn,
+  connDetail,
+}: {
+  conn: "idle" | "ok" | "err";
+  connDetail: string | null;
+}) {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+    <div className="mx-auto flex min-h-dvh max-w-lg flex-col justify-center px-6 py-16 text-center">
+      <p className="text-sm font-semibold tracking-wide text-primary">TindaKo</p>
+      <h1 className="mt-3 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+        Simple POS &amp; stock for your tindahan
+      </h1>
+      <p className="mt-3 text-lg text-muted-foreground text-pretty">Track mo ang tinda mo.</p>
+      <p className="mt-6 text-sm leading-relaxed text-muted-foreground text-pretty">
+        Built for sari-sari stores and small sellers — big buttons, clear labels, and reminders when stock runs low.
+      </p>
+
+      <p className="mt-6 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+        Supabase (client test):{" "}
+        {conn === "idle" ? (
+          "Checking…"
+        ) : conn === "ok" ? (
+          <span className="font-medium text-emerald-700 dark:text-emerald-400">Connected</span>
+        ) : (
+          <span className="font-medium text-destructive" title={connDetail ?? undefined}>
+            Not connected{connDetail ? ` — ${connDetail}` : ""}
+          </span>
+        )}
+      </p>
+
+      <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
+        <Link
+          href="/register"
+          className={cn(
+            buttonVariants({ variant: "default", size: "lg" }),
+            "inline-flex min-h-12 items-center justify-center px-8 text-base"
+          )}
+        >
+          Get started
+        </Link>
+        <Link
+          href="/login"
+          className={cn(
+            buttonVariants({ variant: "outline", size: "lg" }),
+            "inline-flex min-h-12 items-center justify-center px-8 text-base"
+          )}
+        >
+          Sign in
+        </Link>
+      </div>
+
+      {AUTH_DISABLED_FOR_DEV ? (
+        <p className="mt-8 text-xs text-muted-foreground">
+          Dev mode: auth is off — open{" "}
+          <Link href="/dashboard" className="font-medium text-primary underline-offset-4 hover:underline">
+            Dashboard
+          </Link>
+          ,{" "}
+          <Link href="/inventory" className="font-medium text-primary underline-offset-4 hover:underline">
+            Inventory
+          </Link>
+          , or{" "}
+          <Link href="/pos" className="font-medium text-primary underline-offset-4 hover:underline">
+            POS
+          </Link>{" "}
+          directly.
+        </p>
+      ) : null}
     </div>
   );
+}
+
+function HomeMarketingOpen() {
+  const [conn, setConn] = useState<"idle" | "ok" | "err">("idle");
+  const [connDetail, setConnDetail] = useState<string | null>(null);
+
+  useEffect(() => {
+    void testSupabaseConnection().then(({ ok, error }) => {
+      setConn(ok ? "ok" : "err");
+      setConnDetail(error);
+    });
+  }, []);
+
+  return <HomeLanding conn={conn} connDetail={connDetail} />;
+}
+
+function HomeWithAuthRedirect() {
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [conn, setConn] = useState<"idle" | "ok" | "err">("idle");
+  const [connDetail, setConnDetail] = useState<string | null>(null);
+
+  useEffect(() => {
+    void testSupabaseConnection().then(({ ok, error }) => {
+      setConn(ok ? "ok" : "err");
+      setConnDetail(error);
+    });
+  }, []);
+
+  useEffect(() => {
+    const supabase = createClient();
+    void supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (user) {
+        const { data: store } = await supabase.from("stores").select("id").eq("user_id", user.id).maybeSingle();
+        router.replace(store ? "/dashboard" : "/onboarding");
+      } else {
+        setReady(true);
+      }
+    });
+  }, [router]);
+
+  if (!ready) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center p-6 text-sm text-muted-foreground">Loading…</div>
+    );
+  }
+
+  return <HomeLanding conn={conn} connDetail={connDetail} />;
+}
+
+export default function HomePage() {
+  if (AUTH_DISABLED_FOR_DEV) {
+    return <HomeMarketingOpen />;
+  }
+  return <HomeWithAuthRedirect />;
 }
