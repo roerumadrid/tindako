@@ -53,7 +53,7 @@ export default function PosPage() {
 
   return (
     <>
-      <AppHeader title="Point of sale" subtitle="Tap products to add 1 each — or use optional quantity, then complete sale" />
+      <AppHeader subtitle="Tap a product to add one to the cart; tap again for more. Adjust quantities in the cart, then complete sale." />
       <div className="flex flex-col gap-6 pb-8">
         <div className="flex flex-col gap-2">
           <Label htmlFor="pos-product-search" className="sr-only">

@@ -18,7 +18,11 @@ export async function resolveShopForClient(): Promise<ResolvedShopClient> {
   const devId = getDevStoreId();
 
   if (AUTH_DISABLED_FOR_DEV && devId) {
-    const { data, error } = await supabase.from("stores").select("*").eq("id", devId).maybeSingle();
+    const { data, error } = await supabase
+      .from("stores")
+      .select("id, name, user_id")
+      .eq("id", devId)
+      .maybeSingle();
     if (error || !data) {
       return { supabase, store: null };
     }

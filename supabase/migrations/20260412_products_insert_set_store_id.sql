@@ -21,7 +21,7 @@ begin
       into v_sid
     from public.stores s
     where s.user_id = auth.uid()
-    order by s.created_at
+    order by s.id
     limit 1;
 
     if v_sid is null then

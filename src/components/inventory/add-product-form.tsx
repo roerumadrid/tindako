@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import {
+  PRODUCT_UNIT_OTHER_VALUE,
+  PRODUCT_UNIT_PRESETS,
+  resolveUnitForSubmit,
+} from "@/lib/product-units";
 import { createCategory, createProduct } from "@/lib/supabase/mutations";
 import { emitTindakoDataRefresh, TINDAKO_DATA_EVENT } from "@/lib/refresh-events";
 import { FEEDBACK_AUTO_HIDE_MS, useAutoDismissString, useAutoDismissTrue } from "@/hooks/use-auto-dismiss";
@@ -54,6 +59,8 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addCategoryError, setAddCategoryError] = useState<string | null>(null);
   const [addCategoryPending, setAddCategoryPending] = useState(false);
+  const [unitSelect, setUnitSelect] = useState("pc");
+  const [customUnit, setCustomUnit] = useState("");
 
   useAutoDismissString(error, () => setError(null), FEEDBACK_AUTO_HIDE_MS);
   useAutoDismissTrue(success, () => setSuccess(false), FEEDBACK_AUTO_HIDE_MS);
@@ -90,6 +97,8 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
 
   useEffect(() => {
     setSelectedCategoryId("");
+    setUnitSelect("pc");
+    setCustomUnit("");
   }, [formKey]);
 
   const selectedCategoryName = useMemo(() => {
@@ -137,7 +146,13 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
     e.preventDefault();
     setError(null);
     setSuccess(false);
+    const resolvedUnit = resolveUnitForSubmit(unitSelect, customUnit);
+    if (!resolvedUnit) {
+      setError("Please enter a unit.");
+      return;
+    }
     const fd = new FormData(e.currentTarget);
+    fd.set("unit", resolvedUnit);
 
     setPending(true);
     try {
@@ -191,8 +206,10 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
             </p>
           ) : null}
 
-          <div className="space-y-1.5">
-            <Label htmlFor="add-name">Product name</Label>
+          <div className="space-y-2">
+          <Label htmlFor="add-name" className="block pt-[2px]">
+                Product name
+          </Label>
             <Input
               id="add-name"
               name="name"
@@ -309,16 +326,48 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="add-unit">Unit</Label>
-            <Input
-              id="add-unit"
-              name="unit"
-              autoComplete="off"
-              className={inputClass}
-              defaultValue="pc"
-              placeholder="pc, bottle, sack…"
-            />
+          <div className="mb-4 max-w-xs space-y-1.5 sm:max-w-sm">
+            <Label htmlFor="add-unit-select">Unit</Label>
+            <div className="relative">
+              <select
+                id="add-unit-select"
+                className={selectClass}
+                value={unitSelect}
+                onChange={(e) => {
+                  clearFeedback();
+                  setUnitSelect(e.target.value);
+                  if (e.target.value !== PRODUCT_UNIT_OTHER_VALUE) setCustomUnit("");
+                }}
+                aria-label="Product unit"
+              >
+                {PRODUCT_UNIT_PRESETS.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+                <option value={PRODUCT_UNIT_OTHER_VALUE}>Other...</option>
+              </select>
+              <ChevronDown
+                className="pointer-events-none absolute top-1/2 right-3 size-5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+            </div>
+            {unitSelect === PRODUCT_UNIT_OTHER_VALUE ? (
+              <Input
+                id="add-unit-custom"
+                autoComplete="off"
+                className={inputClass}
+                placeholder="Enter unit"
+                value={customUnit}
+                onValueChange={(v) => {
+                  clearFeedback();
+                  setCustomUnit(v);
+                }}
+                required
+                aria-required
+              />
+            ) : null}
+            <p className="text-xs text-muted-foreground">How you count this item (piece, weight, volume, etc.).</p>
           </div>
         </CardContent>
 

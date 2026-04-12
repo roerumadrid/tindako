@@ -17,11 +17,16 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import type { Product } from "@/types/database";
 
-type Props = { product: Product };
+type Props = {
+  product: Product;
+  /** When inventory is filtered to low/out stock, draw attention to Restock. */
+  emphasizeTrigger?: boolean;
+};
 
-export function RestockProductButton({ product }: Props) {
+export function RestockProductButton({ product, emphasizeTrigger = false }: Props) {
   const { id, name, stock_qty } = product;
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -73,7 +78,11 @@ export function RestockProductButton({ product }: Props) {
         type="button"
         variant="secondary"
         size="sm"
-        className="min-h-9 shrink-0"
+        className={cn(
+          "min-h-9 shrink-0",
+          emphasizeTrigger &&
+            "border-2 border-primary/45 bg-primary/10 font-semibold text-foreground shadow-sm ring-1 ring-primary/20 hover:bg-primary/15 dark:border-primary/50 dark:bg-primary/15 dark:ring-primary/25"
+        )}
         onClick={() => {
           setError(null);
           setOpen(true);

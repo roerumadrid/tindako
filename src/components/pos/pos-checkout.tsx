@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FEEDBACK_AUTO_HIDE_MS, useAutoDismissString } from "@/hooks/use-auto-dismiss";
 import { emitTindakoDataRefresh } from "@/lib/refresh-events";
@@ -15,8 +15,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { formatPeso } from "@/lib/money";
 import { filterProductsByNameSearch } from "@/lib/product";
@@ -33,15 +31,25 @@ type Props = {
   loading?: boolean;
 };
 
+/** Short pulse after a successful tap (visual only). */
+const TAP_FEEDBACK_MS = 140;
+
 export function PosCheckout({ products, productSearchQuery = "", loading = false }: Props) {
   const router = useRouter();
   const [cart, setCart] = useState<Cart>({});
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [qtyInput, setQtyInput] = useState("1");
+  const [tapFeedbackId, setTapFeedbackId] = useState<string | null>(null);
+  const tapFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [cartRemoveTarget, setCartRemoveTarget] = useState<{ id: string; name: string } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (tapFeedbackTimerRef.current) clearTimeout(tapFeedbackTimerRef.current);
+    };
+  }, []);
 
   useAutoDismissString(message, () => setMessage(null), FEEDBACK_AUTO_HIDE_MS);
   useAutoDismissString(successMessage, () => setSuccessMessage(null), FEEDBACK_AUTO_HIDE_MS);
@@ -50,8 +58,6 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
     setMessage(null);
     setSuccessMessage(null);
   }
-
-  const selected = useMemo(() => products.find((p) => p.id === selectedId) ?? null, [products, selectedId]);
 
   const lines = useMemo(() => {
     return products
@@ -71,38 +77,22 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
     [products, productSearchQuery]
   );
 
-  /** Quick sell: each tap adds 1 to cart (while stock allows). Keeps product selected for optional bulk add. */
+  /** Each tap adds 1 to the cart (until stock cap). Quantity changes in the cart use + / − / Remove. */
   function quickAddFromProductTap(p: Product) {
     if (p.stock_qty <= 0) return;
     clearPosFeedback();
-    setSelectedId(p.id);
     const current = cart[p.id] ?? 0;
     if (current >= p.stock_qty) {
-      setMessage(`No more stock for ${p.name}.`);
-      setQtyInput("1");
+      setMessage(`No more available for ${p.name}.`);
       return;
     }
     setCart((c) => ({ ...c, [p.id]: current + 1 }));
-    setQtyInput("1");
-  }
-
-  function addToCartFromSelection() {
-    clearPosFeedback();
-    if (!selected) {
-      setMessage("Tap a product in the list first, or add from the list with one tap each.");
-      return;
-    }
-    const parsed = Number.parseInt(qtyInput, 10);
-    const want = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-    const current = cart[selected.id] ?? 0;
-    const maxAdd = selected.stock_qty - current;
-    if (maxAdd <= 0) {
-      setMessage(`No more stock for ${selected.name}.`);
-      return;
-    }
-    const add = Math.min(want, maxAdd);
-    setCart((c) => ({ ...c, [selected.id]: current + add }));
-    setQtyInput(String(add));
+    if (tapFeedbackTimerRef.current) clearTimeout(tapFeedbackTimerRef.current);
+    setTapFeedbackId(p.id);
+    tapFeedbackTimerRef.current = setTimeout(() => {
+      setTapFeedbackId(null);
+      tapFeedbackTimerRef.current = null;
+    }, TAP_FEEDBACK_MS);
   }
 
   function removeOne(productId: string) {
@@ -124,14 +114,13 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
       delete next[productId];
       return next;
     });
-    setSelectedId((id) => (id === productId ? null : id));
   }
 
   function addOne(p: Product) {
     clearPosFeedback();
     const current = cart[p.id] ?? 0;
     if (current >= p.stock_qty) {
-      setMessage(`No more stock for ${p.name}.`);
+      setMessage(`No more available for ${p.name}.`);
       return;
     }
     setCart((c) => ({ ...c, [p.id]: current + 1 }));
@@ -143,7 +132,6 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
   }
 
   function openCheckoutConfirm() {
-    console.log("[POS] Complete sale — open confirm", { lineCount: lines.length, lines });
     clearPosFeedback();
     if (!lines.length) {
       setMessage("Tap products above to add at least one item to the cart.");
@@ -155,6 +143,17 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
   function handleConfirmDialogOpen(next: boolean) {
     if (!next && pending) return;
     setConfirmOpen(next);
+  }
+
+  function handleCartRemoveDialogOpen(next: boolean) {
+    if (!next) setCartRemoveTarget(null);
+  }
+
+  function confirmRemoveFromCart() {
+    if (!cartRemoveTarget) return;
+    const { id } = cartRemoveTarget;
+    setCartRemoveTarget(null);
+    removeLine(id);
   }
 
   async function confirmCompleteSale() {
@@ -172,9 +171,7 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
     clearPosFeedback();
     setPending(true);
     try {
-      console.log("[POS] awaiting completeSale(…)", payload);
       const result = await completeSale(payload);
-      console.log("[POS] completeSale resolved", result);
 
       if (result.error) {
         setMessage(result.error);
@@ -187,16 +184,13 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
       setSuccessMessage(`Sale completed successfully.${idNote} Stock updated.`);
       setConfirmOpen(false);
       setCart({});
-      setSelectedId(null);
-      setQtyInput("1");
+      setTapFeedbackId(null);
       emitTindakoDataRefresh();
       router.refresh();
     } catch (e) {
-      console.error("[POS] completeSale rejected / threw", e);
       setMessage(e instanceof Error ? e.message : "Checkout failed unexpectedly.");
     } finally {
       setPending(false);
-      console.log("[POS] checkout finished (pending cleared)");
     }
   }
 
@@ -209,7 +203,7 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-5">
       <Dialog open={confirmOpen} onOpenChange={handleConfirmDialogOpen}>
         <DialogContent variant="stacked" showCloseButton={false} className="w-[calc(100%-1.5rem)] max-w-md sm:max-w-md">
           <DialogHeader className="border-b border-border/60 px-4 pt-4 pb-3 sm:px-6">
@@ -262,6 +256,37 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
         </DialogContent>
       </Dialog>
 
+      <Dialog open={cartRemoveTarget !== null} onOpenChange={handleCartRemoveDialogOpen}>
+        <DialogContent variant="stacked" showCloseButton={false} className="w-[calc(100%-1.5rem)] max-w-md sm:max-w-md">
+          <DialogHeader className="space-y-2 border-b border-border/60 px-4 pt-4 pb-4 sm:px-6 sm:pr-14">
+            <DialogTitle className="text-lg font-semibold leading-snug">Remove item</DialogTitle>
+            {cartRemoveTarget ? (
+              <DialogDescription className="text-left text-base leading-snug font-medium text-foreground">
+                Remove &lsquo;{cartRemoveTarget.name}&rsquo; from cart?
+              </DialogDescription>
+            ) : null}
+          </DialogHeader>
+          <DialogFooter className="flex-col gap-3 border-0 px-4 pt-2 pb-4 sm:flex-row sm:px-6 sm:pb-5">
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-12 w-full sm:min-h-11 sm:flex-1"
+              onClick={() => setCartRemoveTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              className="min-h-12 w-full font-semibold sm:min-h-11 sm:flex-1"
+              onClick={confirmRemoveFromCart}
+            >
+              Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {successMessage ? (
         <p
           className="rounded-xl border border-emerald-500/30 bg-emerald-500/[0.08] px-3 py-2.5 text-sm leading-snug font-medium text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-950/35 dark:text-emerald-100"
@@ -280,11 +305,12 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
       ) : null}
 
       <section className="flex flex-col gap-3" aria-label="Products for sale">
-        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">1. Products — tap to add 1</h2>
+        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">1. Products</h2>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          Each tap adds <span className="font-medium text-foreground">one</span> to the cart. Tap again for more. Use section 2 if you need a bigger amount at once.
+          Tap to add <span className="font-medium text-foreground">one</span> at a time. Tap again to add more. Use{" "}
+          <span className="font-medium text-foreground">+</span> / <span className="font-medium text-foreground">−</span> in the cart to adjust.
         </p>
-        <ul className="flex flex-col gap-4">
+        <ul className="flex flex-col gap-3">
           {products.length === 0 ? (
             <li className="rounded-2xl border border-dashed px-4 py-12 text-center text-base text-muted-foreground">
               No products yet. Add items in Inventory first.
@@ -295,41 +321,66 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
             </li>
           ) : (
             listProducts.map((p) => {
-              const status = getStockStatus(p);
-              const disabled = p.stock_qty <= 0;
-              const isSelected = p.id === selectedId;
               const inCart = cart[p.id] ?? 0;
+              const availableStock = Math.max(0, p.stock_qty - inCart);
+              const shelfEmpty = p.stock_qty <= 0;
+              const cannotAddMore = availableStock <= 0;
+              const status = getStockStatus({ stock_qty: availableStock, reorder_level: p.reorder_level });
+              const ariaStock = shelfEmpty
+                ? "Out of stock"
+                : availableStock <= 0
+                  ? `No more available, ${p.stock_qty} total in shelf`
+                  : `${availableStock} left to sell of ${p.stock_qty} total`;
+              const showTapFlash = tapFeedbackId === p.id;
+              const inCartHighlight = inCart > 0 && !cannotAddMore;
               return (
                 <li key={p.id}>
                   <button
                     type="button"
-                    disabled={disabled}
+                    disabled={cannotAddMore}
                     onClick={() => quickAddFromProductTap(p)}
+                    aria-label={`${p.name}, ${formatPeso(p.selling_price)}, ${ariaStock}${inCart > 0 ? `, ${inCart} in cart` : ""}`}
                     className={cn(
-                      "flex w-full min-h-[4.25rem] flex-col justify-center gap-1 rounded-2xl border-2 bg-card px-4 py-3 text-left shadow-sm transition-colors sm:min-h-[4.5rem] sm:flex-row sm:items-center sm:justify-between sm:gap-4",
-                      disabled ? "cursor-not-allowed opacity-45" : "active:bg-muted/70",
-                      isSelected ? "border-primary ring-2 ring-primary/30" : "border-transparent"
+                      "flex w-full min-h-[4.25rem] touch-manipulation flex-col justify-center gap-2 rounded-2xl border-2 bg-card px-4 py-3 text-left shadow-sm sm:min-h-[4.5rem] sm:flex-row sm:items-center sm:justify-between sm:gap-4",
+                      "transition-[transform,background-color,box-shadow,border-color] duration-100 ease-out motion-reduce:transition-none motion-reduce:transform-none",
+                      cannotAddMore
+                        ? "cursor-not-allowed border-border/30 bg-muted/20 opacity-50"
+                        : "border-border/50 active:scale-[0.985] active:bg-muted/40",
+                      inCartHighlight && "border-primary/40 bg-primary/[0.06]",
+                      showTapFlash &&
+                        "scale-[0.98] border-primary/55 bg-primary/15 ring-2 ring-primary/25 ring-offset-2 ring-offset-background"
                     )}
                   >
-                    <span className="text-lg font-semibold leading-tight">{p.name}</span>
-                    <span className="flex shrink-0 flex-wrap items-center gap-2 text-base">
-                      <span className="font-medium tabular-nums text-foreground">{formatPeso(p.selling_price)}</span>
-                      <span
-                        className={cn(
-                          "rounded-full px-3 py-1 text-sm font-medium",
-                          status === "out" && "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200",
-                          status === "low" && "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100",
-                          status === "ok" && "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100"
-                        )}
-                      >
-                        {p.stock_qty} left
-                      </span>
-                      {inCart > 0 ? (
-                        <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs font-semibold text-primary tabular-nums">
-                          In cart: {inCart}
+                    <span className="min-w-0 text-lg font-semibold leading-tight">{p.name}</span>
+                    <div className="flex shrink-0 flex-col gap-1.5 sm:items-end">
+                      <span className="text-base font-medium tabular-nums text-foreground">{formatPeso(p.selling_price)}</span>
+                      <div className="flex max-w-full flex-wrap items-center gap-1.5 sm:justify-end">
+                        <span
+                          className={cn(
+                            "inline-flex min-h-8 max-w-full flex-col items-center justify-center gap-0.5 rounded-full px-2.5 py-1 text-center text-[11px] leading-tight font-medium tabular-nums sm:min-h-0 sm:px-3 sm:py-1.5 sm:text-xs",
+                            status === "out" && "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200",
+                            status === "low" && "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100",
+                            status === "ok" && "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100"
+                          )}
+                        >
+                          {shelfEmpty ? (
+                            "Out of stock"
+                          ) : availableStock <= 0 ? (
+                            <>
+                              <span className="font-semibold leading-tight">No more available</span>
+                              <span className="text-[10px] font-normal opacity-90 tabular-nums">({p.stock_qty} total)</span>
+                            </>
+                          ) : (
+                            <span className="whitespace-nowrap">{`${availableStock} left (${p.stock_qty} total)`}</span>
+                          )}
                         </span>
-                      ) : null}
-                    </span>
+                        {inCart > 0 ? (
+                          <span className="inline-flex min-h-8 items-center rounded-full border border-primary/30 bg-primary/12 px-2.5 py-1 text-[11px] font-semibold text-primary tabular-nums sm:text-xs">
+                            In cart: {inCart}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
                   </button>
                 </li>
               );
@@ -338,62 +389,12 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
         </ul>
       </section>
 
-      <section className="flex flex-col gap-3" aria-label="Optional quantity">
-        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">2. Add more (optional)</h2>
-        <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-sm sm:p-6">
-          {selected ? (
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs font-medium uppercase text-muted-foreground">Selected</p>
-                <p className="mt-1 text-xl font-semibold leading-snug">{selected.name}</p>
-                <p className="mt-1 text-base text-muted-foreground">
-                  {formatPeso(selected.selling_price)} <span className="text-sm">per {selected.unit}</span>
-                </p>
-                {(cart[selected.id] ?? 0) > 0 ? (
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    In cart now: <span className="font-semibold tabular-nums text-foreground">{cart[selected.id]}</span>
-                  </p>
-                ) : null}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="pos-qty" className="text-base">
-                  How many to add?
-                </Label>
-                <Input
-                  id="pos-qty"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={selected.stock_qty}
-                  value={qtyInput}
-                  onChange={(e) => {
-                    clearPosFeedback();
-                    setQtyInput(e.target.value);
-                  }}
-                  className="min-h-14 text-center text-2xl font-semibold tabular-nums"
-                />
-                <p className="text-sm text-muted-foreground">
-                  In stock: <span className="font-medium text-foreground">{selected.stock_qty}</span>
-                </p>
-              </div>
-              <Button type="button" size="lg" className="min-h-12 w-full text-base font-semibold sm:min-h-11 sm:text-lg" onClick={addToCartFromSelection}>
-                Add to cart
-              </Button>
-            </div>
-          ) : (
-            <p className="text-center text-sm leading-relaxed text-muted-foreground">
-              Tap a product above to select it, then set a quantity here if you want more than one at a time.
-            </p>
-          )}
-        </div>
-      </section>
-
       <section
         aria-label="Cart and checkout"
         className="overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm"
       >
         <div className="border-b border-border/50 px-5 py-4 sm:px-6">
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">3. Cart</h2>
+          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">2. Cart</h2>
           <p className="mt-1 text-lg font-semibold text-foreground">Your cart</p>
         </div>
         <div className="space-y-3 px-5 py-5 sm:px-6">
@@ -447,7 +448,7 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
                       type="button"
                       variant="outline"
                       className="min-h-12 w-full border-destructive/40 text-sm font-semibold text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => removeLine(product.id)}
+                      onClick={() => setCartRemoveTarget({ id: product.id, name: product.name })}
                       aria-label={`Remove ${product.name} from cart`}
                     >
                       Remove

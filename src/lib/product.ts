@@ -23,6 +23,57 @@ export function filterProductsByCategory(products: readonly Product[], categoryK
   return products.filter((p) => (p.category_id ?? "").trim() === k);
 }
 
+export type InventoryStockFilter = "all" | "low" | "out";
+
+/** Parse `?stock=` from the inventory URL; unknown values → `"all"`. */
+export function parseInventoryStockParam(raw: string | null | undefined): InventoryStockFilter {
+  if (raw === "low" || raw === "out") return raw;
+  return "all";
+}
+
+/** Inventory stock tabs: all, low (1…reorder_level), out (0). Composes with search/category filters. */
+export function filterProductsByStockFilter(
+  products: readonly Product[],
+  stock: InventoryStockFilter
+): Product[] {
+  if (stock !== "low" && stock !== "out") return [...products];
+  if (stock === "out") {
+    return products.filter((p) => p.stock_qty === 0);
+  }
+  return products.filter((p) => p.stock_qty > 0 && p.stock_qty <= p.reorder_level);
+}
+
+/**
+ * Inventory list urgency (lower = show first). Used after search/category/stock filters.
+ *
+ * | Value | Meaning |
+ * |-------|---------|
+ * | 0 | Out of stock (`stock_qty === 0`) |
+ * | 1 | Low stock (`stock_qty > 0` and `<= reorder_level`) |
+ * | 2 | Fast selling (product id in today’s top sellers set, stock above reorder) |
+ * | 3 | Normal |
+ */
+export function getProductUrgency(product: Product, topProductIds: ReadonlySet<string>): number {
+  const { stock_qty, reorder_level, id } = product;
+  if (stock_qty === 0) return 0;
+  if (stock_qty > 0 && stock_qty <= reorder_level) return 1;
+  if (topProductIds.has(id)) return 2;
+  return 3;
+}
+
+/** Sort by {@link getProductUrgency} ascending, then name (locale, case-insensitive). */
+export function sortProductsByUrgencyThenName(
+  products: readonly Product[],
+  topProductIds: ReadonlySet<string>
+): Product[] {
+  return [...products].sort((a, b) => {
+    const ua = getProductUrgency(a, topProductIds);
+    const ub = getProductUrgency(b, topProductIds);
+    if (ua !== ub) return ua - ub;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
+}
+
 function categoryDisplayFromRow(row: Record<string, unknown>): string {
   const embed = row.categories;
   if (embed && typeof embed === "object" && !Array.isArray(embed)) {

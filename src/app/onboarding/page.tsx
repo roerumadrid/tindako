@@ -10,7 +10,7 @@ export default function OnboardingPage() {
       </div>
       <StoreForm
         title="Store details"
-        description="This name shows on your dashboard. Owner name is for your records."
+        description="This name shows on your dashboard. You can change it later in Store."
         submitLabel="Save and continue"
       />
     </div>

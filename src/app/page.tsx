@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Logo } from "@/components/brand/logo";
 import { buttonVariants } from "@/components/ui/button";
 import { AUTH_DISABLED_FOR_DEV } from "@/lib/dev-auth";
+import { ensureDefaultStoreForUser } from "@/lib/store";
 import { createClient, testSupabaseConnection } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 
@@ -17,11 +19,12 @@ function HomeLanding({
 }) {
   return (
     <div className="mx-auto flex min-h-dvh max-w-lg flex-col justify-center px-6 py-16 text-center">
-      <p className="text-sm font-semibold tracking-wide text-primary">TindaKo</p>
-      <h1 className="mt-3 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+      <div className="mb-12 flex flex-col items-center text-center">
+        <Logo layout="stacked" />
+      </div>
+      <h1 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
         Simple POS &amp; stock for your tindahan
       </h1>
-      <p className="mt-3 text-lg text-muted-foreground text-pretty">Track mo ang tinda mo.</p>
       <p className="mt-6 text-sm leading-relaxed text-muted-foreground text-pretty">
         Built for sari-sari stores and small sellers — big buttons, clear labels, and reminders when stock runs low.
       </p>
@@ -59,24 +62,6 @@ function HomeLanding({
           Sign in
         </Link>
       </div>
-
-      {AUTH_DISABLED_FOR_DEV ? (
-        <p className="mt-8 text-xs text-muted-foreground">
-          Dev mode: auth is off — open{" "}
-          <Link href="/dashboard" className="font-medium text-primary underline-offset-4 hover:underline">
-            Dashboard
-          </Link>
-          ,{" "}
-          <Link href="/inventory" className="font-medium text-primary underline-offset-4 hover:underline">
-            Inventory
-          </Link>
-          , or{" "}
-          <Link href="/pos" className="font-medium text-primary underline-offset-4 hover:underline">
-            POS
-          </Link>{" "}
-          directly.
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -110,14 +95,21 @@ function HomeWithAuthRedirect() {
 
   useEffect(() => {
     const supabase = createClient();
-    void supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (user) {
-        const { data: store } = await supabase.from("stores").select("id").eq("user_id", user.id).maybeSingle();
-        router.replace(store ? "/dashboard" : "/onboarding");
-      } else {
+    void (async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.user) {
         setReady(true);
+        return;
       }
-    });
+      const ensured = await ensureDefaultStoreForUser(supabase, session.user.id, session.user.email);
+      if (!ensured.ok) {
+        setReady(true);
+        return;
+      }
+      router.replace("/dashboard");
+    })();
   }, [router]);
 
   if (!ready) {

@@ -3,125 +3,131 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { sanitizeUsernameInput, usernameToSyntheticEmail, validateUsername } from "@/lib/auth-username";
 import { createClient } from "@/lib/supabase";
-import { AUTH_DISABLED_FOR_DEV } from "@/lib/dev-auth";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+
+function humanizeRegisterError(message: string): string {
+  const m = message.toLowerCase();
+  if (
+    m.includes("already") ||
+    m.includes("registered") ||
+    m.includes("exists") ||
+    m.includes("duplicate") ||
+    m.includes("unique violation")
+  ) {
+    return "Username already taken.";
+  }
+  if (m.includes("invalid email")) return "Invalid username.";
+  return message.includes("@") ? "Something went wrong. Try again." : message;
+}
 
 export function RegisterForm() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [sent, setSent] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setMessage("");
+    setErrorMessage("");
+    const userErr = validateUsername(username);
+    if (userErr) {
+      setErrorMessage(userErr);
+      return;
+    }
+    if (!password.trim()) {
+      setErrorMessage("Password is required.");
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMessage("Password must be at least 6 characters.");
+      return;
+    }
+    const email = usernameToSyntheticEmail(username);
     setLoading(true);
     const supabase = createClient();
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: {
-        emailRedirectTo: `${origin}/auth/callback?next=/onboarding`,
-      },
     });
     setLoading(false);
     if (error) {
-      setMessage(error.message);
+      setErrorMessage(humanizeRegisterError(error.message));
       return;
     }
+    router.refresh();
     if (data.session) {
-      router.refresh();
-      router.push(AUTH_DISABLED_FOR_DEV ? "/dashboard" : "/onboarding");
+      router.push("/dashboard");
       return;
     }
-    setSent(true);
+    router.push("/login");
   }
 
-  if (sent) {
-    return (
-      <Card className="w-full border shadow-sm">
-        <CardHeader>
-          <CardTitle className="text-xl">Check your email</CardTitle>
-          <CardDescription>
-            We sent a confirmation link to <strong>{email}</strong>. Open it on this device to finish setup.
-          </CardDescription>
-        </CardHeader>
-        <CardFooter>
-          <Link
-            href="/login"
-            className={cn(
-              buttonVariants({ variant: "outline" }),
-              "flex min-h-12 w-full items-center justify-center rounded-lg text-base"
-            )}
-          >
-            Back to sign in
-          </Link>
-        </CardFooter>
-      </Card>
-    );
-  }
+  const invalid = Boolean(errorMessage);
 
   return (
-    <Card className="w-full border shadow-sm">
-      <CardHeader className="space-y-1">
-        <CardTitle className="text-xl">Create account</CardTitle>
-        <CardDescription>Use your email and a secure password (at least 6 characters).</CardDescription>
-      </CardHeader>
-      <form onSubmit={onSubmit}>
-        <CardContent className="space-y-4">
-          {message ? (
-            <p className="text-sm text-destructive" role="alert">
-              {message}
-            </p>
-          ) : null}
-          <div className="space-y-2">
-            <Label htmlFor="reg-email">Email</Label>
-            <Input
-              id="reg-email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              required
-              className="min-h-12 text-base"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="reg-password">Password</Label>
-            <Input
-              id="reg-password"
-              name="password"
-              type="password"
-              autoComplete="new-password"
-              required
-              minLength={6}
-              className="min-h-12 text-base"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-        </CardContent>
-        <CardFooter className="flex flex-col gap-3">
-          <Button type="submit" className="min-h-12 w-full text-base" disabled={loading}>
-            {loading ? "Creating…" : "Create account"}
-          </Button>
-          <p className="text-center text-sm text-muted-foreground">
-            Already have an account?{" "}
-            <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
-              Sign in
-            </Link>
+    <div className="flex w-full flex-col items-center space-y-6 text-center">
+      <h1 className="text-2xl font-semibold tracking-tight">Create account</h1>
+      <form onSubmit={handleSubmit} className="w-full text-left">
+        <div className="mb-4">
+          <Label htmlFor="reg-username" className="mb-2 block">
+            Username
+          </Label>
+          <Input
+            id="reg-username"
+            name="username"
+            type="text"
+            autoComplete="username"
+            autoFocus
+            required
+            aria-invalid={invalid}
+            className={cn("min-h-12 text-base", invalid && "border-red-500 focus-visible:border-red-500")}
+            value={username}
+            onChange={(e) => setUsername(sanitizeUsernameInput(e.target.value))}
+          />
+        </div>
+        <div className="mb-4">
+          <Label htmlFor="reg-password" className="mb-2 block">
+            Password
+          </Label>
+          <Input
+            id="reg-password"
+            name="password"
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={6}
+            aria-invalid={invalid}
+            className={cn("min-h-12 text-base", invalid && "border-red-500 focus-visible:border-red-500")}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-muted-foreground">At least 6 characters</p>
+        </div>
+        {errorMessage ? (
+          <p className="mt-1 text-xs text-red-500" role="alert">
+            {errorMessage}
           </p>
-        </CardFooter>
+        ) : null}
+        <Button
+          type="submit"
+          className="mt-4 min-h-12 w-full text-base transition hover:opacity-90 active:scale-[0.98] disabled:hover:opacity-100 disabled:active:scale-100"
+          disabled={loading}
+        >
+          {loading ? "Creating account..." : "Register"}
+        </Button>
+        <p className="mt-5 text-center text-sm text-muted-foreground">
+          Already have an account?{" "}
+          <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
+            Sign in
+          </Link>
+        </p>
       </form>
-    </Card>
+    </div>
   );
 }

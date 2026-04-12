@@ -6,10 +6,18 @@ import { DeleteProductButton } from "@/components/inventory/delete-product-butto
 import { RestockProductButton } from "@/components/inventory/restock-product-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatPeso } from "@/lib/money";
-import { filterProductsByCategory, filterProductsByNameSearch } from "@/lib/product";
+import {
+  filterProductsByCategory,
+  filterProductsByNameSearch,
+  filterProductsByStockFilter,
+  sortProductsByUrgencyThenName,
+  type InventoryStockFilter,
+} from "@/lib/product";
 import { getStockStatus, stockStatusLabel } from "@/lib/stock";
 import { cn } from "@/lib/utils";
 import type { Product, StockStatus } from "@/types/database";
+
+const EMPTY_TOP_PRODUCT_IDS = new Set<string>();
 
 const stockBadgeStyles: Record<StockStatus, string> = {
   out: "bg-red-100 text-red-900 dark:bg-red-950/85 dark:text-red-100",
@@ -23,6 +31,12 @@ type Props = {
   searchQuery: string;
   /** Empty string = all categories (see `INVENTORY_UNCATEGORIZED_VALUE` in `@/lib/product`). */
   categoryFilter?: string;
+  /** Stock condition filter (with search and category). */
+  stockFilter?: InventoryStockFilter;
+  /** After delete succeeds, remove the product from parent state so the list updates immediately. */
+  onProductDeleted?: (productId: string) => void;
+  /** Product IDs in “Top Products Today” (qty sold today); used for urgency sort after filters. */
+  topProductIdsToday?: ReadonlySet<string>;
 };
 
 export function InventoryProductList({
@@ -30,11 +44,18 @@ export function InventoryProductList({
   products,
   searchQuery,
   categoryFilter = "",
+  stockFilter = "all",
+  onProductDeleted,
+  topProductIdsToday = EMPTY_TOP_PRODUCT_IDS,
 }: Props) {
   const visibleProducts = useMemo(() => {
     const byName = filterProductsByNameSearch(products, searchQuery);
-    return filterProductsByCategory(byName, categoryFilter);
-  }, [products, searchQuery, categoryFilter]);
+    const byCategory = filterProductsByCategory(byName, categoryFilter);
+    const byStock = filterProductsByStockFilter(byCategory, stockFilter);
+    return sortProductsByUrgencyThenName(byStock, topProductIdsToday);
+  }, [products, searchQuery, categoryFilter, stockFilter, topProductIdsToday]);
+
+  const emphasizeRestock = stockFilter === "low" || stockFilter === "out";
 
   if (loading) {
     return (
@@ -65,7 +86,7 @@ export function InventoryProductList({
     return (
       <section aria-label="Product list">
         <p className="rounded-2xl border border-dashed border-border/60 bg-muted/25 px-4 py-12 text-center text-base text-muted-foreground shadow-sm">
-          No products match your search or category.
+          No products match your search, category, or stock filter.
         </p>
       </section>
     );
@@ -115,8 +136,8 @@ export function InventoryProductList({
 
                 <div className="flex flex-wrap items-start gap-2 border-t border-border/50 pt-4">
                   <ProductDialog product={p} />
-                  <RestockProductButton product={p} />
-                  <DeleteProductButton productId={p.id} productName={p.name} />
+                  <RestockProductButton product={p} emphasizeTrigger={emphasizeRestock} />
+                  <DeleteProductButton productId={p.id} productName={p.name} onDeleted={onProductDeleted} />
                 </div>
               </CardContent>
             </Card>

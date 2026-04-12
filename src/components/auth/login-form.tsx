@@ -3,86 +3,125 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { sanitizeUsernameInput, usernameToSyntheticEmail, validateUsername } from "@/lib/auth-username";
 import { createClient } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+
+function humanizeLoginError(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("invalid login credentials")) return "Invalid username or password.";
+  if (m.includes("email not confirmed")) return "Invalid username or password.";
+  if (m.includes("invalid email")) return "Invalid username or password.";
+  return message.includes("@") ? "Invalid username or password." : message;
+}
 
 export function LoginForm({ errorParam }: { errorParam?: string }) {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [message, setMessage] = useState(errorParam ? "Could not sign you in. Try again." : "");
+  const [errorMessage, setErrorMessage] = useState(errorParam ? "Invalid username or password." : "");
   const [loading, setLoading] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    setMessage("");
-    setLoading(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) {
-      setMessage(error.message);
+    setErrorMessage("");
+    const userErr = validateUsername(username);
+    if (userErr) {
+      setErrorMessage(userErr);
       return;
     }
-    router.refresh();
+    if (!password.trim()) {
+      setErrorMessage("Password is required.");
+      return;
+    }
+    const email = usernameToSyntheticEmail(username);
+    setLoading(true);
+    const supabase = createClient();
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    console.log("login result", data, error);
+
+    if (error) {
+      setLoading(false);
+      setErrorMessage(humanizeLoginError(error.message));
+      return;
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    console.log("session after login", sessionData.session);
+
+    if (!sessionData.session) {
+      setLoading(false);
+      setErrorMessage("Could not start your session. Try again.");
+      return;
+    }
+
     router.push("/dashboard");
+    router.refresh();
+    setLoading(false);
   }
 
+  const invalid = Boolean(errorMessage);
+
   return (
-    <Card className="w-full border shadow-sm">
-      <CardHeader className="space-y-1">
-        <CardTitle className="text-xl">Sign in</CardTitle>
-        <CardDescription>Enter your email and password to continue.</CardDescription>
-      </CardHeader>
-      <form onSubmit={onSubmit}>
-        <CardContent className="space-y-4">
-          {message ? (
-            <p className="text-sm text-destructive" role="alert">
-              {message}
-            </p>
-          ) : null}
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              required
-              className="min-h-12 text-base"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
-            <Input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              className="min-h-12 text-base"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-        </CardContent>
-        <CardFooter className="flex flex-col gap-3">
-          <Button type="submit" className="min-h-12 w-full text-base" disabled={loading}>
-            {loading ? "Signing in…" : "Sign in"}
-          </Button>
-          <p className="text-center text-sm text-muted-foreground">
-            No account yet?{" "}
-            <Link href="/register" className="font-medium text-primary underline-offset-4 hover:underline">
-              Create one
-            </Link>
+    <div className="flex w-full flex-col items-center space-y-6 text-center">
+      <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
+      <form onSubmit={handleLogin} className="w-full text-left">
+        <div className="mb-4">
+          <Label htmlFor="username" className="mb-2 block">
+            Username
+          </Label>
+          <Input
+            id="username"
+            name="username"
+            type="text"
+            autoComplete="username"
+            autoFocus
+            required
+            aria-invalid={invalid}
+            className={cn("min-h-12 text-base", invalid && "border-red-500 focus-visible:border-red-500")}
+            value={username}
+            onChange={(e) => setUsername(sanitizeUsernameInput(e.target.value))}
+          />
+        </div>
+        <div className="mb-4">
+          <Label htmlFor="password" className="mb-2 block">
+            Password
+          </Label>
+          <Input
+            id="password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            aria-invalid={invalid}
+            className={cn("min-h-12 text-base", invalid && "border-red-500 focus-visible:border-red-500")}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-muted-foreground">Use your registered username and password</p>
+        </div>
+        {errorMessage ? (
+          <p className="mt-1 text-xs text-red-500" role="alert">
+            {errorMessage}
           </p>
-        </CardFooter>
+        ) : null}
+        <Button
+          type="submit"
+          className="mt-4 min-h-12 w-full text-base transition hover:opacity-90 active:scale-[0.98] disabled:hover:opacity-100 disabled:active:scale-100"
+          disabled={loading}
+        >
+          {loading ? "Signing in..." : "Sign in"}
+        </Button>
+        <p className="mt-5 text-center text-sm text-muted-foreground">
+          Don&apos;t have an account?{" "}
+          <Link href="/register" className="font-medium text-primary underline-offset-4 hover:underline">
+            Register
+          </Link>
+        </p>
       </form>
-    </Card>
+    </div>
   );
 }

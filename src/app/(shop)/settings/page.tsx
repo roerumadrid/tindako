@@ -8,14 +8,12 @@ import { resolveShopForClient } from "@/lib/resolve-shop-client";
 
 export default function SettingsPage() {
   const [name, setName] = useState("");
-  const [owner, setOwner] = useState("");
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     const { store } = await resolveShopForClient();
     if (store) {
       setName(store.name);
-      setOwner(store.owner_name);
     }
     setLoading(false);
   }, []);
@@ -40,14 +38,14 @@ export default function SettingsPage() {
 
   return (
     <>
-      <AppHeader title="Store" subtitle="Name and owner" />
+      <AppHeader subtitle="Store name" />
       <StoreForm
         title="Store details"
         description="Update how your store appears in TindaKo."
         submitLabel="Save changes"
         defaultName={name}
-        defaultOwnerName={owner}
         afterSaveHref="/settings"
+        onSaved={(store) => setName(store.name)}
       />
     </>
   );

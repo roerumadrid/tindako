@@ -17,7 +17,7 @@ function AuthCallbackInner() {
     }
 
     const code = searchParams.get("code");
-    const next = searchParams.get("next") ?? "/onboarding";
+    const next = searchParams.get("next") ?? "/";
 
     if (!code) {
       router.replace("/login?error=auth");

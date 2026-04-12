@@ -1,9 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { ChevronDown } from "lucide-react";
 import { useAutoDismissString } from "@/hooks/use-auto-dismiss";
 import { emitTindakoDataRefresh, TINDAKO_DATA_EVENT } from "@/lib/refresh-events";
+import { parseMoneyInput } from "@/lib/money";
+import {
+  PRODUCT_UNIT_OTHER_VALUE,
+  PRODUCT_UNIT_PRESETS,
+  resolveUnitForSubmit,
+  unitSelectValueFromStored,
+} from "@/lib/product-units";
 import { createCategory, updateProduct } from "@/lib/supabase/mutations";
 import { createClient } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
@@ -27,6 +34,27 @@ function fieldClass() {
 
 const ADD_CATEGORY_SELECT_VALUE = "__add_category__";
 
+/** Normalize category / product FK ids for reliable `<select>` matching. */
+function normalizeCategoryId(id: unknown): string {
+  return String(id ?? "").trim();
+}
+
+function normalizeCategoryRow(row: Record<string, unknown>): Category {
+  return {
+    id: normalizeCategoryId(row.id),
+    name: String((row as { name: unknown }).name ?? "").trim(),
+    created_at: String((row as { created_at?: unknown }).created_at ?? ""),
+  };
+}
+
+/** Product FK as stored for edit form + resolver (always string, never `"undefined"`). */
+function normalizedProductCategoryId(product: Product): string {
+  if (product.category_id == null) return "";
+  const s = String(product.category_id).trim();
+  if (s === "" || s === "undefined" || s === "null") return "";
+  return s;
+}
+
 const selectClass = cn(
   "min-h-12 w-full cursor-pointer appearance-none rounded-xl border border-input bg-transparent px-3 py-2 pr-10 text-base text-foreground shadow-sm transition-colors outline-none",
   "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
@@ -35,34 +63,97 @@ const selectClass = cn(
 );
 
 function resolveInitialCategoryId(product: Product, categories: Category[]): string {
-  if (product.category_id && categories.some((c) => c.id === product.category_id)) {
-    return product.category_id;
+  const normalizedPid = normalizedProductCategoryId(product);
+  if (normalizedPid) {
+    const pidLower = normalizedPid.toLowerCase();
+    const byId = categories.find((c) => normalizeCategoryId(c.id).toLowerCase() === pidLower);
+    if (byId) return normalizeCategoryId(byId.id);
   }
   const t = (product.category_display || product.category).trim().toLowerCase();
   if (t) {
     const m = categories.find((c) => c.name.trim().toLowerCase() === t);
-    if (m) return m.id;
+    if (m) return normalizeCategoryId(m.id);
   }
   return "";
+}
+
+type EditFormSnapshot = {
+  name: string;
+  categoryId: string;
+  unitSelect: string;
+  customUnit: string;
+  costPrice: string;
+  sellingPrice: string;
+  stockQty: string;
+  reorderLevel: string;
+};
+
+/** Baseline row; pass `resolvedCategoryId` from `resolveInitialCategoryId` (categories must be loaded). */
+function snapshotFromProduct(product: Product, resolvedCategoryId: string): EditFormSnapshot {
+  const u = unitSelectValueFromStored(product.unit);
+  return {
+    name: product.name,
+    categoryId: resolvedCategoryId,
+    unitSelect: u.selectValue,
+    customUnit: u.custom,
+    costPrice: String(product.cost_price),
+    sellingPrice: String(product.selling_price),
+    stockQty: String(product.stock_qty),
+    reorderLevel: String(product.reorder_level),
+  };
+}
+
+function parseStockInt(value: string): number {
+  const n = Number.parseInt(String(value).trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function snapshotsDirty(a: EditFormSnapshot, b: EditFormSnapshot): boolean {
+  return (
+    a.name.trim() !== b.name.trim() ||
+    a.categoryId !== b.categoryId ||
+    a.unitSelect !== b.unitSelect ||
+    a.customUnit.trim() !== b.customUnit.trim() ||
+    parseMoneyInput(a.costPrice) !== parseMoneyInput(b.costPrice) ||
+    parseMoneyInput(a.sellingPrice) !== parseMoneyInput(b.sellingPrice) ||
+    parseStockInt(a.stockQty) !== parseStockInt(b.stockQty) ||
+    parseStockInt(a.reorderLevel) !== parseStockInt(b.reorderLevel)
+  );
 }
 
 type Props = { product: Product };
 
 export function ProductDialog({ product }: Props) {
   const [open, setOpen] = useState(false);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const productRef = useRef(product);
+  productRef.current = product;
+
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [categoriesError, setCategoriesError] = useState<string | null>(null);
-  const [selectedCategoryId, setSelectedCategoryId] = useState("");
-  const categorySeedDoneRef = useRef(false);
+  const [selectedCategoryId, setSelectedCategoryId] = useState(() => {
+    if (!product) return "";
+    return resolveInitialCategoryId(product, categories);
+  });
 
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addCategoryError, setAddCategoryError] = useState<string | null>(null);
   const [addCategoryPending, setAddCategoryPending] = useState(false);
+  const [unitSelect, setUnitSelect] = useState("pc");
+  const [customUnit, setCustomUnit] = useState("");
+
+  const [name, setName] = useState(product.name);
+  const [costPrice, setCostPrice] = useState(String(product.cost_price));
+  const [sellingPrice, setSellingPrice] = useState(String(product.selling_price));
+  const [stockQty, setStockQty] = useState(String(product.stock_qty));
+  const [reorderLevel, setReorderLevel] = useState(String(product.reorder_level));
+  const [initialSnapshot, setInitialSnapshot] = useState<EditFormSnapshot | null>(null);
 
   useAutoDismissString(error, () => setError(null));
 
@@ -74,25 +165,38 @@ export function ProductDialog({ product }: Props) {
     if (qErr) {
       setCategories([]);
       setCategoriesError(qErr.message);
+      if (openRef.current) {
+        setSelectedCategoryId(resolveInitialCategoryId(productRef.current, []));
+      }
     } else {
-      setCategories(
-        (data ?? []).map((row) => ({
-          id: String((row as { id: unknown }).id),
-          name: String((row as { name: unknown }).name),
-          created_at: String((row as { created_at?: unknown }).created_at ?? ""),
-        }))
-      );
+      const mapped = (data ?? []).map((row) => normalizeCategoryRow(row as Record<string, unknown>));
+      setCategories(mapped);
+      if (openRef.current) {
+        setSelectedCategoryId(resolveInitialCategoryId(productRef.current, mapped));
+      }
     }
     setCategoriesLoading(false);
   }, []);
 
   useEffect(() => {
-    if (!open) {
-      categorySeedDoneRef.current = false;
-      return;
-    }
+    if (!open) return;
     void loadCategories();
   }, [open, loadCategories]);
+
+  useEffect(() => {
+    if (!open) {
+      setInitialSnapshot(null);
+      setSelectedCategoryId("");
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setInitialSnapshot(null);
+    if (!product) return;
+    setSelectedCategoryId(resolveInitialCategoryId(product, categories));
+    // Intentionally product.id only: category refresh when categories load runs in loadCategories.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- spec: sync on product row change, not categoriesLoading
+  }, [product.id]);
 
   useEffect(() => {
     const onRefresh = () => void loadCategories();
@@ -101,16 +205,50 @@ export function ProductDialog({ product }: Props) {
   }, [loadCategories]);
 
   useEffect(() => {
-    if (!open || categoriesLoading) return;
-    if (!categorySeedDoneRef.current) {
-      setSelectedCategoryId(resolveInitialCategoryId(product, categories));
-      categorySeedDoneRef.current = true;
-    }
-  }, [open, categoriesLoading, categories, product]);
+    if (!open) return;
+    if (!product) return;
+    if (categoriesLoading) return;
+    if (initialSnapshot) return;
+
+    const resolved = resolveInitialCategoryId(product, categories);
+    const snap = snapshotFromProduct(product, resolved);
+
+    setName(snap.name);
+    setUnitSelect(snap.unitSelect);
+    setCustomUnit(snap.customUnit);
+    setCostPrice(snap.costPrice);
+    setSellingPrice(snap.sellingPrice);
+    setStockQty(snap.stockQty);
+    setReorderLevel(snap.reorderLevel);
+    setInitialSnapshot(snap);
+  }, [open, product, categoriesLoading, categories, initialSnapshot]);
+
+  const currentSnapshot = useMemo(
+    (): EditFormSnapshot => ({
+      name,
+      categoryId: selectedCategoryId,
+      unitSelect,
+      customUnit,
+      costPrice,
+      sellingPrice,
+      stockQty,
+      reorderLevel,
+    }),
+    [name, selectedCategoryId, unitSelect, customUnit, costPrice, sellingPrice, stockQty, reorderLevel]
+  );
+
+  const isDirty =
+    initialSnapshot !== null && snapshotsDirty(currentSnapshot, initialSnapshot);
+
+  const isReady =
+    open && Boolean(product) && !categoriesLoading && initialSnapshot !== null;
 
   function handleOpenChange(next: boolean) {
-    setOpen(next);
     setError(null);
+    if (next) {
+      setSelectedCategoryId(resolveInitialCategoryId(product, categories));
+    }
+    setOpen(next);
     if (!next) {
       setAddCategoryOpen(false);
       setNewCategoryName("");
@@ -150,7 +288,7 @@ export function ProductDialog({ product }: Props) {
       }
       emitTindakoDataRefresh();
       await loadCategories();
-      if (out.category) setSelectedCategoryId(out.category.id);
+      if (out.category) setSelectedCategoryId(normalizeCategoryId(out.category.id));
       handleAddCategoryDialogOpen(false);
     } finally {
       setAddCategoryPending(false);
@@ -160,9 +298,23 @@ export function ProductDialog({ product }: Props) {
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    const fd = new FormData(e.currentTarget);
+    if (!isReady) return;
+    if (!isDirty) return;
+
+    const resolvedUnit = resolveUnitForSubmit(unitSelect, customUnit);
+    if (!resolvedUnit) {
+      setError("Please enter a unit.");
+      return;
+    }
+    const fd = new FormData();
     fd.set("id", product.id);
+    fd.set("name", name.trim());
     fd.set("category_id", selectedCategoryId);
+    fd.set("cost_price", costPrice);
+    fd.set("selling_price", sellingPrice);
+    fd.set("stock_qty", stockQty);
+    fd.set("reorder_level", reorderLevel);
+    fd.set("unit", resolvedUnit);
     startTransition(async () => {
       const result = await updateProduct(fd);
       if (result?.error) {
@@ -190,11 +342,7 @@ export function ProductDialog({ product }: Props) {
           Edit
         </Button>
         <DialogContent variant="stacked" className="w-[calc(100%-1.5rem)] max-w-lg sm:max-w-lg">
-          <form
-            onSubmit={onSubmit}
-            onInput={() => setError(null)}
-            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-          >
+          <form onSubmit={onSubmit} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <DialogHeader className="border-b border-border/60 px-4 pt-4 pr-12 pb-3 sm:px-6 sm:pr-14">
               <DialogTitle>Edit product</DialogTitle>
               <DialogDescription>Update details. Selling price is used at POS.</DialogDescription>
@@ -210,39 +358,50 @@ export function ProductDialog({ product }: Props) {
                 </p>
               ) : null}
 
-              <div key={product.id} className="grid gap-5 pb-2">
+              {categoriesError ? (
+                <p
+                  className="mb-4 rounded-xl border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-sm text-destructive"
+                  role="alert"
+                >
+                  {categoriesError}{" "}
+                  <button
+                    type="button"
+                    className="font-semibold underline underline-offset-2"
+                    onClick={() => void loadCategories()}
+                  >
+                    Retry
+                  </button>
+                </p>
+              ) : null}
+
+              {!isReady ? (
+                <div className="p-6 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
+                  Loading product…
+                </div>
+              ) : (
+                <div className="grid gap-5 pb-2">
                 <section className="space-y-3">
                   <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Basics</p>
                   <div className="space-y-2">
                     <Label htmlFor="p-name">Product name</Label>
                     <Input
                       id="p-name"
-                      name="name"
                       required
                       autoComplete="off"
                       className={fieldClass()}
-                      defaultValue={product.name}
+                      value={name}
+                      onValueChange={(v) => {
+                        setError(null);
+                        setName(v);
+                      }}
                       placeholder="e.g. Coke 500ml"
                     />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="p-category-id">Category</Label>
-                    {categoriesError ? (
-                      <p className="rounded-xl border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-sm text-destructive" role="alert">
-                        {categoriesError}{" "}
-                        <button
-                          type="button"
-                          className="font-semibold underline underline-offset-2"
-                          onClick={() => void loadCategories()}
-                        >
-                          Retry
-                        </button>
-                      </p>
-                    ) : null}
                     <div className="relative">
                       <select
                         id="p-category-id"
-                        name="category_id"
                         className={selectClass}
                         value={selectedCategoryId}
                         onChange={(e) => {
@@ -252,7 +411,7 @@ export function ProductDialog({ product }: Props) {
                             handleAddCategoryDialogOpen(true);
                             return;
                           }
-                          setSelectedCategoryId(v);
+                          setSelectedCategoryId(normalizeCategoryId(v));
                         }}
                         disabled={categoriesLoading || pending}
                         aria-busy={categoriesLoading}
@@ -260,7 +419,7 @@ export function ProductDialog({ product }: Props) {
                       >
                         <option value="">{categoriesLoading ? "Loading categories…" : "No category"}</option>
                         {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
+                          <option key={c.id} value={String(c.id)}>
                             {c.name}
                           </option>
                         ))}
@@ -273,16 +432,49 @@ export function ProductDialog({ product }: Props) {
                     </div>
                     <p className="text-xs text-muted-foreground">Pick a category or add a new one.</p>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="p-unit">Unit</Label>
-                    <Input
-                      id="p-unit"
-                      name="unit"
-                      autoComplete="off"
-                      className={fieldClass()}
-                      defaultValue={product.unit}
-                      placeholder="pc, bottle, kg…"
-                    />
+                  <div className="mb-4 max-w-xs space-y-1.5 sm:max-w-sm">
+                    <Label htmlFor="p-unit-select">Unit</Label>
+                    <div className="relative">
+                      <select
+                        id="p-unit-select"
+                        className={selectClass}
+                        value={unitSelect}
+                        onChange={(e) => {
+                          setError(null);
+                          setUnitSelect(e.target.value);
+                          if (e.target.value !== PRODUCT_UNIT_OTHER_VALUE) setCustomUnit("");
+                        }}
+                        disabled={pending || categoriesLoading}
+                        aria-label="Product unit"
+                      >
+                        {PRODUCT_UNIT_PRESETS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                        <option value={PRODUCT_UNIT_OTHER_VALUE}>Other...</option>
+                      </select>
+                      <ChevronDown
+                        className="pointer-events-none absolute top-1/2 right-3 size-5 -translate-y-1/2 text-muted-foreground"
+                        aria-hidden
+                      />
+                    </div>
+                    {unitSelect === PRODUCT_UNIT_OTHER_VALUE ? (
+                      <Input
+                        id="p-unit-custom"
+                        autoComplete="off"
+                        className={fieldClass()}
+                        placeholder="Enter unit"
+                        value={customUnit}
+                        onValueChange={(v) => {
+                          setError(null);
+                          setCustomUnit(v);
+                        }}
+                        required
+                        aria-required
+                        disabled={pending || categoriesLoading}
+                      />
+                    ) : null}
                     <p className="text-xs text-muted-foreground">How you count this item.</p>
                   </div>
                 </section>
@@ -294,11 +486,14 @@ export function ProductDialog({ product }: Props) {
                       <Label htmlFor="p-cost">Cost price</Label>
                       <Input
                         id="p-cost"
-                        name="cost_price"
                         type="text"
                         inputMode="decimal"
                         className={fieldClass()}
-                        defaultValue={String(product.cost_price)}
+                        value={costPrice}
+                        onValueChange={(v) => {
+                          setError(null);
+                          setCostPrice(v);
+                        }}
                         placeholder="0.00"
                       />
                       <p className="text-xs text-muted-foreground">What you pay per unit.</p>
@@ -307,12 +502,15 @@ export function ProductDialog({ product }: Props) {
                       <Label htmlFor="p-sell">Selling price</Label>
                       <Input
                         id="p-sell"
-                        name="selling_price"
                         type="text"
                         inputMode="decimal"
                         required
                         className={fieldClass()}
-                        defaultValue={String(product.selling_price)}
+                        value={sellingPrice}
+                        onValueChange={(v) => {
+                          setError(null);
+                          setSellingPrice(v);
+                        }}
                         placeholder="0.00"
                       />
                       <p className="text-xs text-muted-foreground">Price at POS.</p>
@@ -327,30 +525,37 @@ export function ProductDialog({ product }: Props) {
                       <Label htmlFor="p-qty">Stock quantity</Label>
                       <Input
                         id="p-qty"
-                        name="stock_qty"
                         type="number"
                         min={0}
                         required
                         className={fieldClass()}
-                        defaultValue={product.stock_qty}
+                        value={stockQty}
+                        onValueChange={(v) => {
+                          setError(null);
+                          setStockQty(v);
+                        }}
                       />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="p-reorder">Reorder level</Label>
                       <Input
                         id="p-reorder"
-                        name="reorder_level"
                         type="number"
                         min={0}
                         required
                         className={fieldClass()}
-                        defaultValue={product.reorder_level}
+                        value={reorderLevel}
+                        onValueChange={(v) => {
+                          setError(null);
+                          setReorderLevel(v);
+                        }}
                       />
                       <p className="text-xs text-muted-foreground">Yellow alert at or below this. Red at zero.</p>
                     </div>
                   </div>
                 </section>
-              </div>
+                </div>
+              )}
             </DialogBody>
 
             <DialogFooter>
@@ -363,7 +568,14 @@ export function ProductDialog({ product }: Props) {
               >
                 Cancel
               </Button>
-              <Button type="submit" className="min-h-12 w-full font-semibold sm:min-h-11 sm:w-auto" disabled={pending || categoriesLoading}>
+              <Button
+                type="submit"
+                className={cn(
+                  "min-h-12 w-full font-semibold sm:min-h-11 sm:w-auto",
+                  (!isReady || !isDirty || pending || categoriesLoading) && "cursor-not-allowed opacity-50"
+                )}
+                disabled={!isReady || !isDirty || pending || categoriesLoading}
+              >
                 {pending ? "Saving…" : "Save"}
               </Button>
             </DialogFooter>

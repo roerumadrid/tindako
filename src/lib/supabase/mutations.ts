@@ -2,32 +2,36 @@ import { AUTH_DISABLED_FOR_DEV, getDevStoreId } from "@/lib/dev-auth";
 import { createClient } from "@/lib/supabase";
 import { getStoreForUser } from "@/lib/store";
 import { parseMoneyInput } from "@/lib/money";
-import type { Category, Product } from "@/types/database";
+import type { Category, Product, Store } from "@/types/database";
 
-export type SaveStoreResult = { error?: string };
+export type SaveStoreResult = { error: string; store?: never } | { error?: never; store: Store };
 
 export async function saveStore(formData: FormData): Promise<SaveStoreResult> {
   const name = String(formData.get("name") ?? "").trim();
-  const ownerName = String(formData.get("owner_name") ?? "").trim();
 
-  if (!name || !ownerName) {
-    return { error: "Store name and owner name are required." };
+  if (!name) {
+    return { error: "Store name is required." };
   }
 
   const supabase = createClient();
   const devStoreId = getDevStoreId();
 
   if (AUTH_DISABLED_FOR_DEV && devStoreId) {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("stores")
-      .update({
-        name,
-        owner_name: ownerName,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", devStoreId);
-    if (error) return { error: error.message };
-    return {};
+      .update({ name })
+      .eq("id", devStoreId)
+      .select("id, name, user_id")
+      .maybeSingle();
+
+    if (error) {
+      console.error("store update failed", error);
+      return { error: error.message };
+    }
+    if (!data) {
+      return { error: "Store not found. Please refresh and try again." };
+    }
+    return { store: data as Store };
   }
 
   const {
@@ -38,20 +42,53 @@ export async function saveStore(formData: FormData): Promise<SaveStoreResult> {
     return { error: "Please sign in again." };
   }
 
-  const { error } = await supabase.from("stores").upsert(
-    {
-      user_id: user.id,
-      name,
-      owner_name: ownerName,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "user_id" }
-  );
+  const userId = user.id;
+
+  const { data: existing, error: existingError } = await supabase
+    .from("stores")
+    .select("id, user_id")
+    .eq("user_id", userId)
+    .limit(1)
+    .maybeSingle();
+
+  if (existingError) {
+    console.error("store lookup failed", existingError);
+    return { error: existingError.message };
+  }
+
+  if (!existing?.id) {
+    console.warn("No store found for user, creating one…", { userId });
+    const { data: created, error: insertError } = await supabase
+      .from("stores")
+      .insert({
+        user_id: userId,
+        name,
+      })
+      .select("id, name, user_id")
+      .single();
+
+    if (insertError) {
+      console.error("store create failed", insertError);
+      return { error: insertError.message };
+    }
+    return { store: created as Store };
+  }
+
+  const { data, error } = await supabase
+    .from("stores")
+    .update({ name })
+    .eq("id", existing.id)
+    .select("id, name, user_id")
+    .maybeSingle();
 
   if (error) {
+    console.error("store update failed", error);
     return { error: error.message };
   }
-  return {};
+  if (!data) {
+    return { error: "Store not found. Please refresh and try again." };
+  }
+  return { store: data as Store };
 }
 
 async function requireStoreId() {

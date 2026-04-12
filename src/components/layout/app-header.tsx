@@ -1,26 +1,30 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { Logo } from "@/components/brand/logo";
 import { AUTH_DISABLED_FOR_DEV } from "@/lib/dev-auth";
-import { signOut } from "@/lib/supabase/mutations";
+import { createClient } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { LogOut } from "lucide-react";
 
-export function AppHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+export function AppHeader({ subtitle }: { subtitle?: string }) {
   const router = useRouter();
 
-  async function onSignOut() {
-    await signOut();
-    router.replace(AUTH_DISABLED_FOR_DEV ? "/" : "/login");
+  async function handleLogout() {
+    if (AUTH_DISABLED_FOR_DEV) {
+      router.replace("/");
+      return;
+    }
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
   }
 
   return (
-    <header className="flex items-start justify-between gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-        {subtitle ? (
-          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
-        ) : null}
+    <header className="flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <Logo />
+        {subtitle ? <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p> : null}
       </div>
       <Button
         type="button"
@@ -28,7 +32,7 @@ export function AppHeader({ title, subtitle }: { title: string; subtitle?: strin
         size="icon-lg"
         className="shrink-0"
         aria-label="Sign out"
-        onClick={() => void onSignOut()}
+        onClick={() => void handleLogout()}
       >
         <LogOut className="size-5" />
       </Button>

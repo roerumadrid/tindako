@@ -5,9 +5,6 @@ create table public.stores (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   name text not null,
-  owner_name text not null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
   unique (user_id)
 );
 
@@ -56,7 +53,7 @@ begin
       into v_sid
     from public.stores s
     where s.user_id = auth.uid()
-    order by s.created_at
+    order by s.id
     limit 1;
 
     if v_sid is null then
@@ -186,6 +183,19 @@ on public.stores
 for all
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
+
+-- Bootstrap + reads: permissive for `authenticated` (ORs with `stores_own` in default mode).
+create policy "Allow insert for authenticated users"
+on public.stores
+for insert
+to authenticated
+with check (true);
+
+create policy "Allow select for authenticated users"
+on public.stores
+for select
+to authenticated
+using (true);
 
 create policy "categories_authenticated_all"
 on public.categories
