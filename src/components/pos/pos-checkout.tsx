@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { formatPeso } from "@/lib/money";
+import { filterProductsByNameSearch } from "@/lib/product";
 import { getStockStatus } from "@/lib/stock";
 import { cn } from "@/lib/utils";
 import type { Product } from "@/types/database";
@@ -27,10 +28,12 @@ type Cart = Record<string, number>;
 
 type Props = {
   products: Product[];
+  /** Filters section 1 only; cart and checkout still use full `products`. */
+  productSearchQuery?: string;
   loading?: boolean;
 };
 
-export function PosCheckout({ products, loading = false }: Props) {
+export function PosCheckout({ products, productSearchQuery = "", loading = false }: Props) {
   const router = useRouter();
   const [cart, setCart] = useState<Cart>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -62,6 +65,11 @@ export function PosCheckout({ products, loading = false }: Props) {
   const total = useMemo(() => {
     return lines.reduce((sum, { product, qty }) => sum + product.selling_price * qty, 0);
   }, [lines]);
+
+  const listProducts = useMemo(
+    () => filterProductsByNameSearch(products, productSearchQuery),
+    [products, productSearchQuery]
+  );
 
   /** Quick sell: each tap adds 1 to cart (while stock allows). Keeps product selected for optional bulk add. */
   function quickAddFromProductTap(p: Product) {
@@ -201,7 +209,7 @@ export function PosCheckout({ products, loading = false }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-8 pb-8">
+    <div className="flex flex-col gap-8">
       <Dialog open={confirmOpen} onOpenChange={handleConfirmDialogOpen}>
         <DialogContent variant="stacked" showCloseButton={false} className="w-[calc(100%-1.5rem)] max-w-md sm:max-w-md">
           <DialogHeader className="border-b border-border/60 px-4 pt-4 pb-3 sm:px-6">
@@ -281,8 +289,12 @@ export function PosCheckout({ products, loading = false }: Props) {
             <li className="rounded-2xl border border-dashed px-4 py-12 text-center text-base text-muted-foreground">
               No products yet. Add items in Inventory first.
             </li>
+          ) : listProducts.length === 0 ? (
+            <li className="rounded-2xl border border-dashed border-border/60 bg-muted/25 px-4 py-12 text-center text-base text-muted-foreground shadow-sm">
+              No products match your search.
+            </li>
           ) : (
-            products.map((p) => {
+            listProducts.map((p) => {
               const status = getStockStatus(p);
               const disabled = p.stock_qty <= 0;
               const isSelected = p.id === selectedId;

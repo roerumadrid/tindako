@@ -2,7 +2,7 @@ import { AUTH_DISABLED_FOR_DEV, getDevStoreId } from "@/lib/dev-auth";
 import { createClient } from "@/lib/supabase";
 import { getStoreForUser } from "@/lib/store";
 import { parseMoneyInput } from "@/lib/money";
-import type { Product } from "@/types/database";
+import type { Category, Product } from "@/types/database";
 
 export type SaveStoreResult = { error?: string };
 
@@ -73,6 +73,8 @@ async function requireStoreId() {
 export async function createProduct(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const category = String(formData.get("category") ?? "").trim();
+  const categoryIdRaw = String(formData.get("category_id") ?? "").trim();
+  const categoryId = categoryIdRaw.length > 0 ? categoryIdRaw : null;
   const costPrice = parseMoneyInput(String(formData.get("cost_price") ?? "0"));
   const sellingPrice = parseMoneyInput(String(formData.get("selling_price") ?? "0"));
   const stockQty = Number.parseInt(String(formData.get("stock_qty") ?? "0"), 10);
@@ -88,6 +90,7 @@ export async function createProduct(formData: FormData) {
   const { error } = await supabase.from("products").insert({
     name,
     category,
+    category_id: categoryId,
     cost_price: costPrice,
     selling_price: sellingPrice,
     stock_qty: stockSafe,
@@ -99,10 +102,46 @@ export async function createProduct(formData: FormData) {
   return { error: null };
 }
 
+export async function createCategory(name: string): Promise<{ error: string | null; category?: Category }> {
+  const trimmed = name.trim();
+  if (!trimmed) return { error: "Category name is required." };
+
+  const supabase = createClient();
+  const { data: rows, error: fetchErr } = await supabase.from("categories").select("id,name");
+  if (fetchErr) return { error: fetchErr.message };
+
+  const lower = trimmed.toLowerCase();
+  const exists = (rows ?? []).some((r) => String(r.name).trim().toLowerCase() === lower);
+  if (exists) {
+    return { error: "A category with that name already exists." };
+  }
+
+  const { data, error } = await supabase.from("categories").insert({ name: trimmed }).select("id,name,created_at").single();
+
+  if (error) {
+    if (error.code === "23505" || error.message.toLowerCase().includes("unique")) {
+      return { error: "A category with that name already exists." };
+    }
+    return { error: error.message };
+  }
+
+  if (!data) return { error: "Could not create category." };
+
+  return {
+    error: null,
+    category: {
+      id: String(data.id),
+      name: String(data.name),
+      created_at: String(data.created_at ?? ""),
+    },
+  };
+}
+
 export async function updateProduct(formData: FormData) {
-  const id = String(formData.get("id") ?? "");
+  const id = String(formData.get("id") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
-  const category = String(formData.get("category") ?? "").trim();
+  const categoryIdRaw = String(formData.get("category_id") ?? "").trim();
+  const categoryId = categoryIdRaw.length > 0 ? categoryIdRaw : null;
   const costPrice = parseMoneyInput(String(formData.get("cost_price") ?? "0"));
   const sellingPrice = parseMoneyInput(String(formData.get("selling_price") ?? "0"));
   const stockQty = Number.parseInt(String(formData.get("stock_qty") ?? "0"), 10);
@@ -111,14 +150,22 @@ export async function updateProduct(formData: FormData) {
 
   if (!id || !name) return { error: "Invalid product." };
 
-  const ctx = await requireStoreId();
-  if (ctx.error || !ctx.storeId || !ctx.supabase) return { error: ctx.error ?? "No store" };
+  const supabase = createClient();
 
-  const { error } = await ctx.supabase
+  let categoryDisplay = "";
+  if (categoryId) {
+    const { data: catRow, error: catErr } = await supabase.from("categories").select("name").eq("id", categoryId).maybeSingle();
+    if (catErr) return { error: catErr.message };
+    if (!catRow) return { error: "Category not found." };
+    categoryDisplay = String((catRow as { name: unknown }).name).trim();
+  }
+
+  const { data: updatedRows, error } = await supabase
     .from("products")
     .update({
       name,
-      category,
+      category: categoryDisplay,
+      category_id: categoryId,
       cost_price: costPrice,
       selling_price: sellingPrice,
       stock_qty: Number.isFinite(stockQty) ? Math.max(0, stockQty) : 0,
@@ -126,9 +173,12 @@ export async function updateProduct(formData: FormData) {
       unit,
     })
     .eq("id", id)
-    .eq("store_id", ctx.storeId);
+    .select("id");
 
   if (error) return { error: error.message };
+  if (!updatedRows?.length) {
+    return { error: "Product was not updated. Check that this product exists and you have access." };
+  }
   return { error: null };
 }
 

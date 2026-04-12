@@ -1,10 +1,12 @@
 "use client";
 
+import { useMemo } from "react";
 import { ProductDialog } from "@/components/inventory/product-dialog";
 import { DeleteProductButton } from "@/components/inventory/delete-product-button";
 import { RestockProductButton } from "@/components/inventory/restock-product-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatPeso } from "@/lib/money";
+import { filterProductsByCategory, filterProductsByNameSearch } from "@/lib/product";
 import { getStockStatus, stockStatusLabel } from "@/lib/stock";
 import { cn } from "@/lib/utils";
 import type { Product, StockStatus } from "@/types/database";
@@ -18,9 +20,22 @@ const stockBadgeStyles: Record<StockStatus, string> = {
 type Props = {
   loading: boolean;
   products: Product[];
+  searchQuery: string;
+  /** Empty string = all categories (see `INVENTORY_UNCATEGORIZED_VALUE` in `@/lib/product`). */
+  categoryFilter?: string;
 };
 
-export function InventoryProductList({ loading, products }: Props) {
+export function InventoryProductList({
+  loading,
+  products,
+  searchQuery,
+  categoryFilter = "",
+}: Props) {
+  const visibleProducts = useMemo(() => {
+    const byName = filterProductsByNameSearch(products, searchQuery);
+    return filterProductsByCategory(byName, categoryFilter);
+  }, [products, searchQuery, categoryFilter]);
+
   if (loading) {
     return (
       <section aria-busy="true" aria-label="Loading products">
@@ -38,7 +53,7 @@ export function InventoryProductList({ loading, products }: Props) {
           <CardContent className="px-5 py-14 text-center">
             <p className="text-base font-medium text-foreground">No products yet</p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              Add your first item with the form above. Your inventory will show up here.
+              Tap <span className="font-medium text-foreground">+ Add Product</span> to add your first item.
             </p>
           </CardContent>
         </Card>
@@ -46,10 +61,20 @@ export function InventoryProductList({ loading, products }: Props) {
     );
   }
 
+  if (visibleProducts.length === 0) {
+    return (
+      <section aria-label="Product list">
+        <p className="rounded-2xl border border-dashed border-border/60 bg-muted/25 px-4 py-12 text-center text-base text-muted-foreground shadow-sm">
+          No products match your search or category.
+        </p>
+      </section>
+    );
+  }
+
   return (
     <section aria-label="Product list">
       <ul className="flex flex-col gap-4">
-        {products.map((p) => {
+        {visibleProducts.map((p) => {
           const status = getStockStatus(p);
           return (
           <li key={p.id}>
@@ -64,7 +89,11 @@ export function InventoryProductList({ loading, products }: Props) {
                   <div className="min-w-0 flex-1 space-y-1">
                     <h2 className="text-lg font-semibold leading-snug tracking-tight text-foreground">{p.name}</h2>
                     <p className="text-sm text-muted-foreground">
-                      {p.category.trim() ? p.category : <span className="italic opacity-80">Uncategorized</span>}
+                      {p.category_display.trim() ? (
+                        p.category_display
+                      ) : (
+                        <span className="italic opacity-80">Uncategorized</span>
+                      )}
                     </p>
                   </div>
                   <span

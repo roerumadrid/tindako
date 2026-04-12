@@ -11,11 +11,20 @@ create table public.stores (
   unique (user_id)
 );
 
+create table public.categories (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  created_at timestamptz not null default now()
+);
+
+create index categories_name_idx on public.categories (name);
+
 create table public.products (
   id uuid primary key default gen_random_uuid(),
   store_id uuid not null references public.stores (id) on delete cascade,
   name text not null,
   category text not null default '',
+  category_id uuid references public.categories (id) on delete set null,
   cost_price numeric(12, 2) not null default 0 check (cost_price >= 0),
   selling_price numeric(12, 2) not null default 0 check (selling_price >= 0),
   stock_qty integer not null default 0 check (stock_qty >= 0),
@@ -25,6 +34,7 @@ create table public.products (
 );
 
 create index products_store_id_idx on public.products (store_id);
+create index products_category_id_idx on public.products (category_id);
 
 -- Inserts may omit store_id; it is filled from the current user’s store (or the sole store in dev).
 create or replace function public.products_set_store_id ()
@@ -166,6 +176,7 @@ revoke all on function public.complete_sale (jsonb) from public;
 grant execute on function public.complete_sale (jsonb) to authenticated;
 
 alter table public.stores enable row level security;
+alter table public.categories enable row level security;
 alter table public.products enable row level security;
 alter table public.sales enable row level security;
 alter table public.sale_items enable row level security;
@@ -175,6 +186,25 @@ on public.stores
 for all
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
+
+create policy "categories_authenticated_all"
+on public.categories
+for all
+to authenticated
+using (true)
+with check (true);
+
+create policy "categories_select_anon"
+on public.categories
+for select
+to anon
+using (true);
+
+create policy "categories_insert_anon"
+on public.categories
+for insert
+to anon
+with check (true);
 
 create policy "products_own_store"
 on public.products
@@ -228,6 +258,8 @@ with check (
 
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on public.stores to authenticated;
+grant select, insert, update, delete on public.categories to authenticated;
+grant select, insert on public.categories to anon;
 grant select, insert, update, delete on public.products to authenticated;
 grant select, insert, update, delete on public.sales to authenticated;
 grant select, insert, update, delete on public.sale_items to authenticated;
