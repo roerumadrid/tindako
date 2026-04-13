@@ -29,18 +29,20 @@ function HomeLanding({
         Built for sari-sari stores and small sellers — big buttons, clear labels, and reminders when stock runs low.
       </p>
 
-      <p className="mt-6 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        Supabase (client test):{" "}
-        {conn === "idle" ? (
-          "Checking…"
-        ) : conn === "ok" ? (
-          <span className="font-medium text-emerald-700 dark:text-emerald-400">Connected</span>
-        ) : (
-          <span className="font-medium text-destructive" title={connDetail ?? undefined}>
-            Not connected{connDetail ? ` — ${connDetail}` : ""}
-          </span>
-        )}
-      </p>
+      {process.env.NODE_ENV === "development" ? (
+        <p className="mt-6 rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          Supabase (client test):{" "}
+          {conn === "idle" ? (
+            "Checking…"
+          ) : conn === "ok" ? (
+            <span className="font-medium text-green-600 dark:text-emerald-400">Connected</span>
+          ) : (
+            <span className="font-medium text-destructive" title={connDetail ?? undefined}>
+              Not connected{connDetail ? ` — ${connDetail}` : ""}
+            </span>
+          )}
+        </p>
+      ) : null}
 
       <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
         <Link
@@ -71,6 +73,7 @@ function HomeMarketingOpen() {
   const [connDetail, setConnDetail] = useState<string | null>(null);
 
   useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
     void testSupabaseConnection().then(({ ok, error }) => {
       setConn(ok ? "ok" : "err");
       setConnDetail(error);
@@ -87,6 +90,7 @@ function HomeWithAuthRedirect() {
   const [connDetail, setConnDetail] = useState<string | null>(null);
 
   useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
     void testSupabaseConnection().then(({ ok, error }) => {
       setConn(ok ? "ok" : "err");
       setConnDetail(error);
