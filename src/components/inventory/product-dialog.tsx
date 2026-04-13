@@ -5,12 +5,9 @@ import { ChevronDown } from "lucide-react";
 import { useAutoDismissString } from "@/hooks/use-auto-dismiss";
 import { emitTindakoDataRefresh, TINDAKO_DATA_EVENT } from "@/lib/refresh-events";
 import { parseMoneyInput } from "@/lib/money";
-import {
-  PRODUCT_UNIT_OTHER_VALUE,
-  PRODUCT_UNIT_PRESETS,
-  resolveUnitForSubmit,
-  unitSelectValueFromStored,
-} from "@/lib/product-units";
+import { isStandardUnitSelectValue, storedUnitToSelectValue, UNIT_OPTIONS } from "@/lib/product-units";
+import { displayCategoryName, normalizeCategoryName } from "@/lib/category-names";
+import { ManageCategoriesDialog } from "@/components/inventory/manage-categories-dialog";
 import { createCategory, updateProduct } from "@/lib/supabase/mutations";
 import { createClient } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
@@ -25,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { handleSuccess } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 import type { Category, Product } from "@/types/database";
 
@@ -71,7 +69,7 @@ function resolveInitialCategoryId(product: Product, categories: Category[]): str
   }
   const t = (product.category_display || product.category).trim().toLowerCase();
   if (t) {
-    const m = categories.find((c) => c.name.trim().toLowerCase() === t);
+    const m = categories.find((c) => normalizeCategoryName(c.name) === t);
     if (m) return normalizeCategoryId(m.id);
   }
   return "";
@@ -80,8 +78,7 @@ function resolveInitialCategoryId(product: Product, categories: Category[]): str
 type EditFormSnapshot = {
   name: string;
   categoryId: string;
-  unitSelect: string;
-  customUnit: string;
+  unit: string;
   costPrice: string;
   sellingPrice: string;
   stockQty: string;
@@ -90,12 +87,10 @@ type EditFormSnapshot = {
 
 /** Baseline row; pass `resolvedCategoryId` from `resolveInitialCategoryId` (categories must be loaded). */
 function snapshotFromProduct(product: Product, resolvedCategoryId: string): EditFormSnapshot {
-  const u = unitSelectValueFromStored(product.unit);
   return {
     name: product.name,
     categoryId: resolvedCategoryId,
-    unitSelect: u.selectValue,
-    customUnit: u.custom,
+    unit: storedUnitToSelectValue(product.unit) || "pc",
     costPrice: String(product.cost_price),
     sellingPrice: String(product.selling_price),
     stockQty: String(product.stock_qty),
@@ -112,8 +107,7 @@ function snapshotsDirty(a: EditFormSnapshot, b: EditFormSnapshot): boolean {
   return (
     a.name.trim() !== b.name.trim() ||
     a.categoryId !== b.categoryId ||
-    a.unitSelect !== b.unitSelect ||
-    a.customUnit.trim() !== b.customUnit.trim() ||
+    a.unit.trim() !== b.unit.trim() ||
     parseMoneyInput(a.costPrice) !== parseMoneyInput(b.costPrice) ||
     parseMoneyInput(a.sellingPrice) !== parseMoneyInput(b.sellingPrice) ||
     parseStockInt(a.stockQty) !== parseStockInt(b.stockQty) ||
@@ -145,8 +139,8 @@ export function ProductDialog({ product }: Props) {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addCategoryError, setAddCategoryError] = useState<string | null>(null);
   const [addCategoryPending, setAddCategoryPending] = useState(false);
-  const [unitSelect, setUnitSelect] = useState("pc");
-  const [customUnit, setCustomUnit] = useState("");
+  const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
+  const [unit, setUnit] = useState(() => storedUnitToSelectValue(product.unit) || "pc");
 
   const [name, setName] = useState(product.name);
   const [costPrice, setCostPrice] = useState(String(product.cost_price));
@@ -214,8 +208,7 @@ export function ProductDialog({ product }: Props) {
     const snap = snapshotFromProduct(product, resolved);
 
     setName(snap.name);
-    setUnitSelect(snap.unitSelect);
-    setCustomUnit(snap.customUnit);
+    setUnit(snap.unit);
     setCostPrice(snap.costPrice);
     setSellingPrice(snap.sellingPrice);
     setStockQty(snap.stockQty);
@@ -227,14 +220,13 @@ export function ProductDialog({ product }: Props) {
     (): EditFormSnapshot => ({
       name,
       categoryId: selectedCategoryId,
-      unitSelect,
-      customUnit,
+      unit,
       costPrice,
       sellingPrice,
       stockQty,
       reorderLevel,
     }),
-    [name, selectedCategoryId, unitSelect, customUnit, costPrice, sellingPrice, stockQty, reorderLevel]
+    [name, selectedCategoryId, unit, costPrice, sellingPrice, stockQty, reorderLevel]
   );
 
   const isDirty =
@@ -242,6 +234,8 @@ export function ProductDialog({ product }: Props) {
 
   const isReady =
     open && Boolean(product) && !categoriesLoading && initialSnapshot !== null;
+
+  const unitSelectShowsLegacy = useMemo(() => !isStandardUnitSelectValue(unit), [unit]);
 
   function handleOpenChange(next: boolean) {
     setError(null);
@@ -274,14 +268,20 @@ export function ProductDialog({ product }: Props) {
 
   async function submitNewCategory() {
     setAddCategoryError(null);
-    const trimmed = newCategoryName.trim();
-    if (!trimmed) {
+    const normalizedName = normalizeCategoryName(newCategoryName);
+    if (!normalizedName) {
       setAddCategoryError("Enter a category name.");
+      return;
+    }
+    const localMatch = categories.find((c) => normalizeCategoryName(c.name) === normalizedName);
+    if (localMatch) {
+      setSelectedCategoryId(normalizeCategoryId(localMatch.id));
+      handleAddCategoryDialogOpen(false);
       return;
     }
     setAddCategoryPending(true);
     try {
-      const out = await createCategory(trimmed);
+      const out = await createCategory(normalizedName);
       if (out.error) {
         setAddCategoryError(out.error);
         return;
@@ -289,7 +289,11 @@ export function ProductDialog({ product }: Props) {
       emitTindakoDataRefresh();
       await loadCategories();
       if (out.category) setSelectedCategoryId(normalizeCategoryId(out.category.id));
-      handleAddCategoryDialogOpen(false);
+      handleSuccess("Category added successfully", {
+        description: "You can now use it for products",
+        closeModal: () => handleAddCategoryDialogOpen(false),
+        shouldCloseOnSuccess: true,
+      });
     } finally {
       setAddCategoryPending(false);
     }
@@ -301,11 +305,7 @@ export function ProductDialog({ product }: Props) {
     if (!isReady) return;
     if (!isDirty) return;
 
-    const resolvedUnit = resolveUnitForSubmit(unitSelect, customUnit);
-    if (!resolvedUnit) {
-      setError("Please enter a unit.");
-      return;
-    }
+    const resolvedUnit = unit.trim() || "pc";
     const fd = new FormData();
     fd.set("id", product.id);
     fd.set("name", name.trim());
@@ -321,8 +321,11 @@ export function ProductDialog({ product }: Props) {
         setError(result.error);
         return;
       }
-      handleOpenChange(false);
       emitTindakoDataRefresh();
+      handleSuccess("Product updated", {
+        closeModal: () => handleOpenChange(false),
+        shouldCloseOnSuccess: true,
+      });
     });
   }
 
@@ -341,7 +344,11 @@ export function ProductDialog({ product }: Props) {
         >
           Edit
         </Button>
-        <DialogContent variant="stacked" className="w-[calc(100%-1.5rem)] max-w-lg sm:max-w-lg">
+        <DialogContent
+          dimmed={addCategoryOpen || manageCategoriesOpen}
+          variant="stacked"
+          className="w-[calc(100%-1.5rem)] max-w-lg sm:max-w-lg"
+        >
           <form onSubmit={onSubmit} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <DialogHeader className="border-b border-border/60 px-4 pt-4 pr-12 pb-3 sm:px-6 sm:pr-14">
               <DialogTitle>Edit product</DialogTitle>
@@ -420,7 +427,7 @@ export function ProductDialog({ product }: Props) {
                         <option value="">{categoriesLoading ? "Loading categories…" : "No category"}</option>
                         {categories.map((c) => (
                           <option key={c.id} value={String(c.id)}>
-                            {c.name}
+                            {displayCategoryName(c.name)}
                           </option>
                         ))}
                         <option value={ADD_CATEGORY_SELECT_VALUE}>+ Add category</option>
@@ -431,6 +438,15 @@ export function ProductDialog({ product }: Props) {
                       />
                     </div>
                     <p className="text-xs text-muted-foreground">Pick a category or add a new one.</p>
+                    <ManageCategoriesDialog
+                      categories={categories}
+                      disabled={categoriesLoading || pending}
+                      onRefreshCategories={loadCategories}
+                      onManageDialogOpenChange={setManageCategoriesOpen}
+                      onCategoryDeleted={(deletedId) => {
+                        if (selectedCategoryId === deletedId) setSelectedCategoryId("");
+                      }}
+                    />
                   </div>
                   <div className="mb-4 max-w-xs space-y-1.5 sm:max-w-sm">
                     <Label htmlFor="p-unit-select">Unit</Label>
@@ -438,43 +454,30 @@ export function ProductDialog({ product }: Props) {
                       <select
                         id="p-unit-select"
                         className={selectClass}
-                        value={unitSelect}
+                        value={unit}
                         onChange={(e) => {
                           setError(null);
-                          setUnitSelect(e.target.value);
-                          if (e.target.value !== PRODUCT_UNIT_OTHER_VALUE) setCustomUnit("");
+                          setUnit(e.target.value);
                         }}
                         disabled={pending || categoriesLoading}
                         aria-label="Product unit"
                       >
-                        {PRODUCT_UNIT_PRESETS.map((u) => (
-                          <option key={u} value={u}>
-                            {u}
+                        {UNIT_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
                           </option>
                         ))}
-                        <option value={PRODUCT_UNIT_OTHER_VALUE}>Other...</option>
+                        {unitSelectShowsLegacy ? (
+                          <option value={unit}>
+                            {unit} (current)
+                          </option>
+                        ) : null}
                       </select>
                       <ChevronDown
                         className="pointer-events-none absolute top-1/2 right-3 size-5 -translate-y-1/2 text-muted-foreground"
                         aria-hidden
                       />
                     </div>
-                    {unitSelect === PRODUCT_UNIT_OTHER_VALUE ? (
-                      <Input
-                        id="p-unit-custom"
-                        autoComplete="off"
-                        className={fieldClass()}
-                        placeholder="Enter unit"
-                        value={customUnit}
-                        onValueChange={(v) => {
-                          setError(null);
-                          setCustomUnit(v);
-                        }}
-                        required
-                        aria-required
-                        disabled={pending || categoriesLoading}
-                      />
-                    ) : null}
                     <p className="text-xs text-muted-foreground">How you count this item.</p>
                   </div>
                 </section>
@@ -584,7 +587,7 @@ export function ProductDialog({ product }: Props) {
       </Dialog>
 
       <Dialog open={addCategoryOpen} onOpenChange={handleAddCategoryDialogOpen}>
-        <DialogContent variant="stacked" className="w-[calc(100%-1.5rem)] max-w-md sm:max-w-md">
+        <DialogContent depth={2} variant="stacked" className="w-[calc(100%-1.5rem)] max-w-md sm:max-w-md">
           <DialogHeader className="border-b border-border/60 px-4 pt-4 pr-12 pb-3 sm:px-6 sm:pr-14">
             <DialogTitle>New category</DialogTitle>
             <DialogDescription className="text-left">Name is checked so duplicates are not added (ignores letter case).</DialogDescription>

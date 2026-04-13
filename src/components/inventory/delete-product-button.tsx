@@ -2,8 +2,12 @@
 
 import { useState, useTransition } from "react";
 import { FEEDBACK_AUTO_HIDE_MS, useAutoDismissString } from "@/hooks/use-auto-dismiss";
+import { handleError } from "@/components/ui/use-toast";
 import { emitTindakoDataRefresh } from "@/lib/refresh-events";
-import { deleteProduct } from "@/lib/supabase/mutations";
+import {
+  deleteProduct,
+  PRODUCT_DELETE_BLOCKED_SALES_MESSAGE,
+} from "@/lib/supabase/mutations";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,39 +18,62 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+const DELETE_DISABLED_HELPER =
+  "Cannot delete products with existing sales.";
+
+function friendlyDeleteError(raw: string): string {
+  const s = raw.toLowerCase();
+  if (
+    s.includes("foreign key") ||
+    s.includes("violates foreign key") ||
+    s.includes("23503")
+  ) {
+    return PRODUCT_DELETE_BLOCKED_SALES_MESSAGE;
+  }
+  return raw;
+}
+
 type Props = {
   productId: string;
+  /** Must match the row’s `store_id` (from list data) so delete targets the same row as the UI. */
+  productStoreId: string;
+  /** From `sale_items(count)` when listing products. */
+  saleItemsCount: number;
   productName: string;
   /** Called after a successful delete so the parent can update local list state immediately. */
   onDeleted?: (productId: string) => void;
 };
 
-export function DeleteProductButton({ productId, productName, onDeleted }: Props) {
+export function DeleteProductButton({
+  productId,
+  productStoreId,
+  saleItemsCount,
+  productName,
+  onDeleted,
+}: Props) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   useAutoDismissString(error, () => setError(null), FEEDBACK_AUTO_HIDE_MS);
-  useAutoDismissString(success, () => setSuccess(null), FEEDBACK_AUTO_HIDE_MS);
+
+  const hasSales = saleItemsCount > 0;
 
   function confirmDelete() {
+    if (hasSales) return;
     setError(null);
-    setSuccess(null);
     startTransition(async () => {
-      const { error: delErr } = await deleteProduct(productId);
-      setDialogOpen(false);
+      const { error: delErr } = await deleteProduct(productId, productStoreId);
       if (delErr) {
-        setError(delErr);
+        setError(friendlyDeleteError(delErr));
         return;
       }
       onDeleted?.(productId);
-      emitTindakoDataRefresh(
-        onDeleted ? { inventoryProductsAlreadyUpdated: true } : undefined
-      );
-      if (!onDeleted) {
-        setSuccess("Product removed.");
-      }
+      emitTindakoDataRefresh();
+      handleError("Product removed.", {
+        closeModal: () => setDialogOpen(false),
+        shouldCloseModal: true,
+      });
     });
   }
 
@@ -83,7 +110,7 @@ export function DeleteProductButton({ productId, productName, onDeleted }: Props
               type="button"
               variant="destructive"
               className="min-h-12 w-full font-semibold sm:min-h-11 sm:flex-1"
-              disabled={pending}
+              disabled={pending || hasSales}
               onClick={() => void confirmDelete()}
             >
               {pending ? "Removing…" : "Remove"}
@@ -101,24 +128,27 @@ export function DeleteProductButton({ productId, productName, onDeleted }: Props
             {error}
           </p>
         ) : null}
-        {success ? (
-          <p
-            className="max-w-[16rem] rounded-md border border-emerald-500/25 bg-emerald-500/[0.08] px-2 py-1.5 text-xs font-medium leading-snug text-emerald-800 dark:text-emerald-200"
-            role="status"
-          >
-            {success}
-          </p>
-        ) : null}
         <Button
           type="button"
           variant="destructive"
           size="sm"
           className="min-h-9"
-          disabled={pending}
-          onClick={() => setDialogOpen(true)}
+          disabled={pending || hasSales}
+          onClick={() => {
+            if (hasSales) return;
+            setDialogOpen(true);
+          }}
         >
           Remove
         </Button>
+        {hasSales ? (
+          <div className="mt-1 space-y-0.5">
+            <p className="text-xs text-muted-foreground">{DELETE_DISABLED_HELPER}</p>
+            <p className="text-xs text-muted-foreground">
+              Used in {saleItemsCount} sale line(s).
+            </p>
+          </div>
+        ) : null}
       </div>
     </>
   );

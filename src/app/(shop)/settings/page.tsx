@@ -38,7 +38,7 @@ export default function SettingsPage() {
 
   return (
     <>
-      <AppHeader subtitle="Store name" />
+      <AppHeader storeName={name.trim() || undefined} />
       <StoreForm
         title="Store details"
         description="Update how your store appears in TindaKo."

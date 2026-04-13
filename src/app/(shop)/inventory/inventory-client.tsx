@@ -44,6 +44,8 @@ export function InventoryClient() {
   const [categoryFilter, setCategoryFilter] = useState("");
   const [stockFilter, setStockFilter] = useState<InventoryStockFilter>("all");
   const [addProductOpen, setAddProductOpen] = useState(false);
+  const [inventoryNestedModalOpen, setInventoryNestedModalOpen] = useState(false);
+  const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false);
 
   useEffect(() => {
     setStockFilter(parseInventoryStockParam(searchParams.get("stock")));
@@ -147,6 +149,10 @@ export function InventoryClient() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!addProductOpen) setIsAddCategoryOpen(false);
+  }, [addProductOpen]);
 
   useEffect(() => {
     const onRefresh = (e: Event) => {
@@ -271,16 +277,36 @@ export function InventoryClient() {
             setAddProductOpen(next);
           }}
         >
-          <DialogContent variant="stacked" className="w-[calc(100%-1.5rem)] max-w-lg sm:max-w-lg">
-            <DialogHeader className="border-b border-border/60 px-4 pt-4 pr-12 pb-3 sm:px-6 sm:pr-14">
-              <DialogTitle>Add product</DialogTitle>
-              <DialogDescription>Fill in the details below. Everything saves to your inventory.</DialogDescription>
-            </DialogHeader>
-            <DialogBody>
-              {addProductOpen ? (
-                <AddProductForm embeddedInModal onRequestClose={() => setAddProductOpen(false)} />
-              ) : null}
-            </DialogBody>
+          <DialogContent
+            dimmed={inventoryNestedModalOpen && !isAddCategoryOpen}
+            showCloseButton={!isAddCategoryOpen}
+            variant="stacked"
+            className={cn(
+              "w-[calc(100%-1.5rem)] max-w-lg sm:max-w-lg",
+              isAddCategoryOpen && "pointer-events-none"
+            )}
+          >
+            <div
+              className={cn(
+                "flex min-h-0 flex-1 flex-col transition",
+                isAddCategoryOpen && "opacity-40 pointer-events-none"
+              )}
+            >
+              <DialogHeader className="border-b border-border/60 px-4 pt-4 pr-12 pb-3 sm:px-6 sm:pr-14">
+                <DialogTitle>Add product</DialogTitle>
+                <DialogDescription>Fill in the details below. Everything saves to your inventory.</DialogDescription>
+              </DialogHeader>
+              <DialogBody>
+                {addProductOpen ? (
+                  <AddProductForm
+                    embeddedInModal
+                    onNestedModalOpenChange={setInventoryNestedModalOpen}
+                    onAddCategoryOpenChange={setIsAddCategoryOpen}
+                    onRequestClose={() => setAddProductOpen(false)}
+                  />
+                ) : null}
+              </DialogBody>
+            </div>
           </DialogContent>
         </Dialog>
 

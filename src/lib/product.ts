@@ -1,3 +1,4 @@
+import { displayCategoryName, normalizeCategoryName } from "@/lib/category-names";
 import type { Product } from "@/types/database";
 
 /** Case-insensitive name filter; empty or whitespace-only query returns all products. */
@@ -10,8 +11,8 @@ export function filterProductsByNameSearch(products: readonly Product[], search:
 /** `select` value for products with no category (must match inventory category filter). */
 export const INVENTORY_UNCATEGORIZED_VALUE = "__uncategorized__";
 
-/** PostgREST select: product columns plus joined category (FK `products.category_id` → `categories`). */
-export const PRODUCT_LIST_SELECT = "*, categories(id,name)";
+/** PostgREST select: product columns, category embed, and count of related `sale_items` rows. */
+export const PRODUCT_LIST_SELECT = "*, categories(id,name), sale_items(count)";
 
 /** Empty `categoryKey` = all categories; otherwise match `category_id` or uncategorized sentinel. */
 export function filterProductsByCategory(products: readonly Product[], categoryKey: string): Product[] {
@@ -78,11 +79,28 @@ function categoryDisplayFromRow(row: Record<string, unknown>): string {
   const embed = row.categories;
   if (embed && typeof embed === "object" && !Array.isArray(embed)) {
     const n = String((embed as { name?: unknown }).name ?? "").trim();
-    if (n) return n;
+    if (n) return displayCategoryName(n);
   }
   const cid = row.category_id != null ? String(row.category_id).trim() : "";
   if (cid) return "";
-  return row.category != null ? String(row.category).trim() : "";
+  const legacy = row.category != null ? String(row.category).trim() : "";
+  return legacy ? displayCategoryName(legacy) : "";
+}
+
+/** Parses `sale_items(count)` aggregate from a products list row. */
+function saleItemsCountFromRow(row: Record<string, unknown>): number {
+  const raw = row.sale_items;
+  if (raw == null) return 0;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const first = raw[0] as { count?: unknown };
+    const c = first?.count;
+    if (typeof c === "number" && Number.isFinite(c)) return Math.max(0, Math.floor(c));
+    if (typeof c === "string") {
+      const n = Number.parseInt(c, 10);
+      return Number.isFinite(n) ? Math.max(0, n) : 0;
+    }
+  }
+  return 0;
 }
 
 /** Maps a Supabase row to Product; supports legacy column names after DB renames. */
@@ -98,12 +116,13 @@ export function normalizeProduct(row: Record<string, unknown>): Product {
       ? Number(row.reorder_level)
       : Number((row as { low_stock_threshold?: unknown }).low_stock_threshold ?? 5);
 
-  const category = row.category != null ? String(row.category) : "";
+  const category = normalizeCategoryName(row.category != null ? String(row.category) : "");
   const category_id = row.category_id != null ? String(row.category_id) : null;
 
   return {
     id: String(row.id),
     store_id: row.store_id != null ? String(row.store_id) : "",
+    sale_items_count: saleItemsCountFromRow(row),
     name: String(row.name),
     category,
     category_id,

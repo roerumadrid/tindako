@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { handleSuccess } from "@/components/ui/use-toast";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { Product } from "@/types/database";
@@ -33,10 +34,8 @@ export function RestockProductButton({ product, emphasizeTrigger = false }: Prop
   const [qtyInput, setQtyInput] = useState("1");
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
   useAutoDismissString(error, () => setError(null), FEEDBACK_AUTO_HIDE_MS);
-  useAutoDismissString(success, () => setSuccess(null), FEEDBACK_AUTO_HIDE_MS);
 
   function handleOpenChange(next: boolean) {
     setOpen(next);
@@ -56,24 +55,18 @@ export function RestockProductButton({ product, emphasizeTrigger = false }: Prop
         setError(err);
         return;
       }
-      setOpen(false);
       setQtyInput("1");
-      setSuccess("Stock updated.");
       emitTindakoDataRefresh();
       router.refresh();
+      handleSuccess("Stock updated.", {
+        closeModal: () => setOpen(false),
+        shouldCloseOnSuccess: true,
+      });
     });
   }
 
   return (
     <div className="flex flex-col items-stretch gap-1.5">
-      {success ? (
-        <p
-          className="max-w-[16rem] rounded-md border border-emerald-500/25 bg-emerald-500/[0.08] px-2 py-1.5 text-xs font-medium leading-snug text-emerald-800 dark:text-emerald-200"
-          role="status"
-        >
-          {success}
-        </p>
-      ) : null}
       <Button
         type="button"
         variant="secondary"

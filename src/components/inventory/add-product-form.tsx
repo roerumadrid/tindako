@@ -1,15 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
-import {
-  PRODUCT_UNIT_OTHER_VALUE,
-  PRODUCT_UNIT_PRESETS,
-  resolveUnitForSubmit,
-} from "@/lib/product-units";
+import { displayCategoryName, normalizeCategoryName } from "@/lib/category-names";
+import { ManageCategoriesDialog } from "@/components/inventory/manage-categories-dialog";
 import { createCategory, createProduct } from "@/lib/supabase/mutations";
 import { emitTindakoDataRefresh, TINDAKO_DATA_EVENT } from "@/lib/refresh-events";
-import { FEEDBACK_AUTO_HIDE_MS, useAutoDismissString, useAutoDismissTrue } from "@/hooks/use-auto-dismiss";
+import { FEEDBACK_AUTO_HIDE_MS, useAutoDismissString } from "@/hooks/use-auto-dismiss";
+import { parseMoneyInput } from "@/lib/money";
+import { UNIT_OPTIONS } from "@/lib/product-units";
+import { handleSuccess } from "@/components/ui/use-toast";
 import { createClient } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,12 +44,23 @@ type Props = {
   embeddedInModal?: boolean;
   /** With `embeddedInModal`, shows Cancel to close the dialog without saving. */
   onRequestClose?: () => void;
+  /** When a nested dialog (new category or manage categories) opens or closes. */
+  onNestedModalOpenChange?: (open: boolean) => void;
+  /** When the “New category” nested dialog opens or closes (for dimming the Add Product shell). */
+  onAddCategoryOpenChange?: (open: boolean) => void;
 };
 
-export function AddProductForm({ embeddedInModal = false, onRequestClose }: Props) {
+export function AddProductForm({
+  embeddedInModal = false,
+  onRequestClose,
+  onNestedModalOpenChange,
+  onAddCategoryOpenChange,
+}: Props) {
+  const topRef = useRef<HTMLDivElement | null>(null);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+
   const [formKey, setFormKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
   const [pending, setPending] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
@@ -59,11 +70,16 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addCategoryError, setAddCategoryError] = useState<string | null>(null);
   const [addCategoryPending, setAddCategoryPending] = useState(false);
-  const [unitSelect, setUnitSelect] = useState("pc");
-  const [customUnit, setCustomUnit] = useState("");
+  const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
+  /** Intentional unit choice (no default preset). */
+  const [unit, setUnit] = useState("");
+  const [name, setName] = useState("");
+  const [costPrice, setCostPrice] = useState("");
+  const [sellingPrice, setSellingPrice] = useState("");
+  const [stockQty, setStockQty] = useState("0");
+  const [reorderLevel, setReorderLevel] = useState("5");
 
   useAutoDismissString(error, () => setError(null), FEEDBACK_AUTO_HIDE_MS);
-  useAutoDismissTrue(success, () => setSuccess(false), FEEDBACK_AUTO_HIDE_MS);
 
   const loadCategories = useCallback(async () => {
     setCategoriesLoading(true);
@@ -96,10 +112,45 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
   }, [loadCategories]);
 
   useEffect(() => {
+    onNestedModalOpenChange?.(addCategoryOpen || manageCategoriesOpen);
+  }, [addCategoryOpen, manageCategoriesOpen, onNestedModalOpenChange]);
+
+  useEffect(() => {
+    onAddCategoryOpenChange?.(addCategoryOpen);
+  }, [addCategoryOpen, onAddCategoryOpenChange]);
+
+  useEffect(() => {
+    setName("");
+    setCostPrice("");
+    setSellingPrice("");
+    setStockQty("0");
+    setReorderLevel("5");
     setSelectedCategoryId("");
-    setUnitSelect("pc");
-    setCustomUnit("");
+    setUnit("");
   }, [formKey]);
+
+  const categoryId = selectedCategoryId.trim();
+  const costPriceNum = parseMoneyInput(costPrice);
+  const sellingPriceNum = parseMoneyInput(sellingPrice);
+  const stockQtyNum = Number.parseInt(String(stockQty).trim(), 10);
+  const reorderLevelNum = Number.parseInt(String(reorderLevel).trim(), 10);
+  const costFilled = costPrice.trim() !== "";
+  const stockFilled = stockQty.trim() !== "";
+  const reorderFilled = reorderLevel.trim() !== "";
+
+  const isFormValid =
+    name.trim() !== "" &&
+    Boolean(categoryId) &&
+    sellingPriceNum > 0 &&
+    costFilled &&
+    costPriceNum >= 0 &&
+    stockFilled &&
+    Number.isFinite(stockQtyNum) &&
+    stockQtyNum >= 0 &&
+    reorderFilled &&
+    Number.isFinite(reorderLevelNum) &&
+    reorderLevelNum >= 0 &&
+    unit !== "";
 
   const selectedCategoryName = useMemo(() => {
     if (!selectedCategoryId) return "";
@@ -108,7 +159,6 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
 
   function clearFeedback() {
     setError(null);
-    setSuccess(false);
   }
 
   function handleAddCategoryDialogOpen(next: boolean) {
@@ -121,14 +171,20 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
 
   async function submitNewCategory() {
     setAddCategoryError(null);
-    const trimmed = newCategoryName.trim();
-    if (!trimmed) {
+    const normalizedName = normalizeCategoryName(newCategoryName);
+    if (!normalizedName) {
       setAddCategoryError("Enter a category name.");
+      return;
+    }
+    const localMatch = categories.find((c) => normalizeCategoryName(c.name) === normalizedName);
+    if (localMatch) {
+      setSelectedCategoryId(localMatch.id);
+      handleAddCategoryDialogOpen(false);
       return;
     }
     setAddCategoryPending(true);
     try {
-      const out = await createCategory(trimmed);
+      const out = await createCategory(normalizedName);
       if (out.error) {
         setAddCategoryError(out.error);
         return;
@@ -136,7 +192,11 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
       emitTindakoDataRefresh();
       await loadCategories();
       if (out.category) setSelectedCategoryId(out.category.id);
-      handleAddCategoryDialogOpen(false);
+      handleSuccess("Category added successfully", {
+        description: "You can now use it for products",
+        closeModal: () => handleAddCategoryDialogOpen(false),
+        shouldCloseOnSuccess: true,
+      });
     } finally {
       setAddCategoryPending(false);
     }
@@ -145,25 +205,34 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    setSuccess(false);
-    const resolvedUnit = resolveUnitForSubmit(unitSelect, customUnit);
-    if (!resolvedUnit) {
-      setError("Please enter a unit.");
-      return;
-    }
+    if (!isFormValid) return;
     const fd = new FormData(e.currentTarget);
-    fd.set("unit", resolvedUnit);
+    fd.set("unit", unit);
 
     setPending(true);
     try {
       const result = await createProduct(fd);
-      if (result?.error) {
+      if ("error" in result && result.error) {
         setError(result.error);
         return;
       }
+      if (!("data" in result) || !result.data) {
+        setError("Product insert did not return a row.");
+        return;
+      }
+
       emitTindakoDataRefresh();
-      setSuccess(true);
+      setError(null);
       setFormKey((k) => k + 1);
+      handleSuccess("Product added successfully", {
+        closeModal: onRequestClose,
+        shouldCloseOnSuccess: false,
+        description: "Item saved to inventory",
+      });
+
+      requestAnimationFrame(() => {
+        nameInputRef.current?.focus();
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save product.");
     } finally {
@@ -187,16 +256,8 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
       ) : null}
 
       <form key={formKey} onSubmit={onSubmit} onInput={clearFeedback}>
-        <CardContent className={cn("space-y-6", embeddedInModal && "px-0 pt-0")}>
-          {success ? (
-            <p
-              className="rounded-xl border border-emerald-500/30 bg-emerald-500/[0.08] px-3 py-2.5 text-sm leading-snug font-medium text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-950/35 dark:text-emerald-100"
-              role="status"
-            >
-              Product added successfully. You can add another below.
-            </p>
-          ) : null}
-
+        <CardContent className={cn(embeddedInModal && "px-0 pt-0")}>
+          <div ref={topRef} className="space-y-6">
           {error ? (
             <p
               className="rounded-xl border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-sm leading-snug text-destructive dark:border-destructive/40"
@@ -207,22 +268,39 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
           ) : null}
 
           <div className="space-y-2">
-          <Label htmlFor="add-name" className="block pt-[2px]">
-                Product name
-          </Label>
+            <Label htmlFor="add-name" className="block pt-[2px]">
+              Product name
+            </Label>
             <Input
+              ref={nameInputRef}
               id="add-name"
               name="name"
-              required
               autoComplete="off"
               className={inputClass}
               placeholder="e.g. Lucky Me Pancit Canton"
+              value={name}
+              onValueChange={(v) => {
+                clearFeedback();
+                setName(v);
+              }}
+              aria-invalid={name.trim() === ""}
+              aria-required
             />
+            {name.trim() === "" ? (
+              <p className="text-xs text-destructive" role="status">
+                Required
+              </p>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="add-category-id">Category</Label>
             <input type="hidden" name="category" value={selectedCategoryName} readOnly aria-hidden />
+            {selectedCategoryId.trim() === "" ? (
+              <p className="text-xs text-destructive" role="status">
+                Choose a category
+              </p>
+            ) : null}
             {categoriesError ? (
               <p className="rounded-xl border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-sm text-destructive" role="alert">
                 {categoriesError}{" "}
@@ -257,7 +335,7 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
                 <option value="">{categoriesLoading ? "Loading categories…" : "No category"}</option>
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name}
+                    {displayCategoryName(c.name)}
                   </option>
                 ))}
                 <option value={ADD_CATEGORY_SELECT_VALUE}>+ Add category</option>
@@ -268,6 +346,15 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
               />
             </div>
             <p className="text-xs text-muted-foreground">Pick a category or add a new one.</p>
+            <ManageCategoriesDialog
+              categories={categories}
+              disabled={categoriesLoading || pending}
+              onRefreshCategories={loadCategories}
+              onManageDialogOpenChange={setManageCategoriesOpen}
+              onCategoryDeleted={(deletedId) => {
+                if (selectedCategoryId === deletedId) setSelectedCategoryId("");
+              }}
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -280,8 +367,21 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
                 inputMode="decimal"
                 className={inputClass}
                 placeholder="0.00"
+                value={costPrice}
+                onValueChange={(v) => {
+                  clearFeedback();
+                  setCostPrice(v);
+                }}
+                aria-invalid={!costFilled}
+                aria-required
               />
-              <p className="text-xs text-muted-foreground">What you paid per unit.</p>
+              {!costFilled ? (
+                <p className="text-xs text-destructive" role="status">
+                  Required
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">What you paid per unit.</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="add-sell">Selling price (₱)</Label>
@@ -290,11 +390,23 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
                 name="selling_price"
                 type="text"
                 inputMode="decimal"
-                required
                 className={inputClass}
                 placeholder="0.00"
+                value={sellingPrice}
+                onValueChange={(v) => {
+                  clearFeedback();
+                  setSellingPrice(v);
+                }}
+                aria-invalid={sellingPriceNum <= 0}
+                aria-required
               />
-              <p className="text-xs text-muted-foreground">Price at checkout (POS).</p>
+              {sellingPriceNum <= 0 ? (
+                <p className="text-xs text-destructive" role="status">
+                  Must be greater than 0
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Price at checkout (POS).</p>
+              )}
             </div>
           </div>
 
@@ -306,10 +418,24 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
                 name="stock_qty"
                 type="number"
                 min={0}
-                required
                 className={inputClass}
-                defaultValue={0}
+                value={stockQty}
+                onValueChange={(v) => {
+                  clearFeedback();
+                  setStockQty(v);
+                }}
+                aria-invalid={!Number.isFinite(stockQtyNum) || stockQtyNum < 0}
+                aria-required
               />
+              {!stockFilled ? (
+                <p className="text-xs text-destructive" role="status">
+                  Required
+                </p>
+              ) : !Number.isFinite(stockQtyNum) || stockQtyNum < 0 ? (
+                <p className="text-xs text-destructive" role="status">
+                  Must be zero or more
+                </p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="add-reorder">Reorder level</Label>
@@ -318,11 +444,26 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
                 name="reorder_level"
                 type="number"
                 min={0}
-                required
                 className={inputClass}
-                defaultValue={5}
+                value={reorderLevel}
+                onValueChange={(v) => {
+                  clearFeedback();
+                  setReorderLevel(v);
+                }}
+                aria-invalid={!Number.isFinite(reorderLevelNum) || reorderLevelNum < 0}
+                aria-required
               />
-              <p className="text-xs text-muted-foreground">Warn when stock is at or below this.</p>
+              {!reorderFilled ? (
+                <p className="text-xs text-destructive" role="status">
+                  Required
+                </p>
+              ) : !Number.isFinite(reorderLevelNum) || reorderLevelNum < 0 ? (
+                <p className="text-xs text-destructive" role="status">
+                  Must be zero or more
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Warn when stock is at or below this.</p>
+              )}
             </div>
           </div>
 
@@ -331,43 +472,39 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
             <div className="relative">
               <select
                 id="add-unit-select"
+                name="unit"
                 className={selectClass}
-                value={unitSelect}
+                value={unit}
                 onChange={(e) => {
                   clearFeedback();
-                  setUnitSelect(e.target.value);
-                  if (e.target.value !== PRODUCT_UNIT_OTHER_VALUE) setCustomUnit("");
+                  setUnit(e.target.value);
                 }}
                 aria-label="Product unit"
+                aria-invalid={unit === ""}
+                aria-required
               >
-                {PRODUCT_UNIT_PRESETS.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
+                <option value="" disabled>
+                  Select unit
+                </option>
+                {UNIT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
                   </option>
                 ))}
-                <option value={PRODUCT_UNIT_OTHER_VALUE}>Other...</option>
               </select>
               <ChevronDown
                 className="pointer-events-none absolute top-1/2 right-3 size-5 -translate-y-1/2 text-muted-foreground"
                 aria-hidden
               />
             </div>
-            {unitSelect === PRODUCT_UNIT_OTHER_VALUE ? (
-              <Input
-                id="add-unit-custom"
-                autoComplete="off"
-                className={inputClass}
-                placeholder="Enter unit"
-                value={customUnit}
-                onValueChange={(v) => {
-                  clearFeedback();
-                  setCustomUnit(v);
-                }}
-                required
-                aria-required
-              />
-            ) : null}
-            <p className="text-xs text-muted-foreground">How you count this item (piece, weight, volume, etc.).</p>
+            {unit === "" ? (
+              <p className="text-xs text-destructive" role="status">
+                Please select a unit
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">How you count this item (piece, weight, volume, etc.).</p>
+            )}
+          </div>
           </div>
         </CardContent>
 
@@ -394,19 +531,20 @@ export function AddProductForm({ embeddedInModal = false, onRequestClose }: Prop
             type="submit"
             size="lg"
             className={cn(
-              "min-h-12 w-full font-semibold sm:min-h-11",
-              embeddedInModal && onRequestClose ? "sm:w-auto" : null
+              "min-h-12 w-full font-semibold transition-opacity sm:min-h-11",
+              embeddedInModal && onRequestClose ? "sm:w-auto" : null,
+              !isFormValid ? "cursor-not-allowed opacity-60" : "cursor-pointer opacity-100"
             )}
-            disabled={pending || categoriesLoading}
+            disabled={!isFormValid || pending || categoriesLoading}
           >
-            {pending ? "Saving…" : "Save product"}
+            {pending ? "Saving..." : "Save product"}
           </Button>
         </CardFooter>
       </form>
     </Card>
 
     <Dialog open={addCategoryOpen} onOpenChange={handleAddCategoryDialogOpen}>
-      <DialogContent variant="stacked" className="w-[calc(100%-1.5rem)] max-w-md sm:max-w-md">
+      <DialogContent depth={2} variant="stacked" className="w-[calc(100%-1.5rem)] max-w-md sm:max-w-md">
         <DialogHeader className="border-b border-border/60 px-4 pt-4 pr-12 pb-3 sm:px-6 sm:pr-14">
           <DialogTitle>New category</DialogTitle>
           <DialogDescription className="text-left">Name is checked so duplicates are not added (ignores letter case).</DialogDescription>

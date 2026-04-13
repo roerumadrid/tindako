@@ -13,6 +13,8 @@ export type Category = {
 export type Product = {
   id: string;
   store_id: string;
+  /** Populated when listing with `sale_items(count)` embed; 0 if absent. */
+  sale_items_count: number;
   name: string;
   category: string;
   /** Optional FK to `categories`; legacy `category` text remains for compatibility. */

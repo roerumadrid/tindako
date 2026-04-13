@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/layout/app-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { AUTH_DISABLED_FOR_DEV } from "@/lib/dev-auth";
@@ -18,7 +18,7 @@ type TopProductEntry = {
   totalSold: number;
 };
 
-type RestockReason = "Out of stock" | "Low stock" | "Fast selling";
+type RestockReason = "Out of stock" | "Low stock";
 
 type RestockSuggestion = {
   productId: string;
@@ -33,6 +33,8 @@ type DashboardStats = {
   totalProfit: number;
   topProductsToday: TopProductEntry[];
   restockSuggestions: RestockSuggestion[];
+  /** Total products that are low or out of stock (may exceed `restockSuggestions.length`). */
+  needsRestockCount: number;
   productCount: number;
   lowStockCount: number;
   outOfStockCount: number;
@@ -89,71 +91,60 @@ function sumProfitFromSaleItemRows(rows: SaleItemProfitRow[]): number {
   return total;
 }
 
-function manilaTodayMetricsDateSubtitle(): string {
-  return `${new Intl.DateTimeFormat("en-PH", {
+/** Calendar day for “today” metrics (same timezone as {@link getManilaTodayUtcRange}). */
+function formatDate(): string {
+  return new Intl.DateTimeFormat("en-PH", {
     month: "short",
     day: "numeric",
     year: "numeric",
     timeZone: "Asia/Manila",
-  }).format(new Date())} · Manila`;
+  }).format(new Date());
 }
 
-function buildStockByProductId(rows: { id?: unknown; stock_qty?: unknown; reorder_level?: unknown }[]) {
-  const map = new Map<string, { stock: number; reorder: number }>();
-  for (const r of rows) {
-    const id = String(r.id ?? "").trim();
-    if (!id) continue;
-    map.set(id, { stock: Number(r.stock_qty), reorder: Number(r.reorder_level) });
-  }
-  return map;
-}
+type ProductStockRow = {
+  id: string;
+  name: string;
+  stock_qty: number;
+  reorder_level: number;
+};
 
 const RESTOCK_SUGGESTIONS_MAX = 5;
 
-/** Out → Low → Fast selling (by today’s sales rank within each tier); max 5 rows. */
-function restockSuggestionsFromTopAndStock(
-  topProducts: TopProductEntry[],
-  productRows: { id?: unknown; stock_qty?: unknown; reorder_level?: unknown }[]
-): RestockSuggestion[] {
-  if (topProducts.length === 0) return [];
+function parseProductStockRow(row: {
+  id?: unknown;
+  name?: unknown;
+  stock_qty?: unknown;
+  reorder_level?: unknown;
+}): ProductStockRow | null {
+  const id = String(row.id ?? "").trim();
+  if (!id) return null;
+  const stock = Number(row.stock_qty);
+  const reorder = Number(row.reorder_level);
+  if (!Number.isFinite(stock) || !Number.isFinite(reorder)) return null;
+  const name = String(row.name ?? "").trim() || "Product";
+  return { id, name, stock_qty: stock, reorder_level: reorder };
+}
 
-  const stockMap = buildStockByProductId(productRows);
+/** Low stock first, then out of stock; reasons match inventory filters. */
+function needsRestockFromProducts(
+  rows: { id?: unknown; name?: unknown; stock_qty?: unknown; reorder_level?: unknown }[]
+): { suggestions: RestockSuggestion[]; total: number } {
+  const products = rows.map(parseProductStockRow).filter((p): p is ProductStockRow => p != null);
+  const lowStock = products.filter((p) => p.stock_qty > 0 && p.stock_qty <= p.reorder_level);
+  const outOfStock = products.filter((p) => p.stock_qty === 0);
+  const needsRestock = [...lowStock, ...outOfStock];
 
-  type Enriched = TopProductEntry & {
-    reason: RestockReason;
-    priority: "high" | "medium";
-    rank: number;
-    /** Sort among high: 0 = out of stock, 1 = low stock */
-    highTier: number;
+  const suggestions: RestockSuggestion[] = needsRestock.map((p) => ({
+    productId: p.id,
+    name: p.name,
+    reason: p.stock_qty === 0 ? "Out of stock" : "Low stock",
+    priority: "high" as const,
+  }));
+
+  return {
+    total: suggestions.length,
+    suggestions: suggestions.slice(0, RESTOCK_SUGGESTIONS_MAX),
   };
-
-  const enriched: Enriched[] = topProducts.map((tp, rank) => {
-    const row = stockMap.get(tp.productId);
-    const stock = row ? row.stock : Number.NaN;
-    const reorder = row ? row.reorder : Number.NaN;
-
-    if (!Number.isFinite(stock)) {
-      return { ...tp, reason: "Fast selling", priority: "medium", rank, highTier: 2 };
-    }
-    if (stock === 0) {
-      return { ...tp, reason: "Out of stock", priority: "high", rank, highTier: 0 };
-    }
-    if (stock > 0 && stock <= reorder) {
-      return { ...tp, reason: "Low stock", priority: "high", rank, highTier: 1 };
-    }
-    return { ...tp, reason: "Fast selling", priority: "medium", rank, highTier: 2 };
-  });
-
-  const high = enriched.filter((e) => e.priority === "high");
-  high.sort((a, b) => {
-    if (a.highTier !== b.highTier) return a.highTier - b.highTier;
-    return a.rank - b.rank;
-  });
-  const medium = enriched.filter((e) => e.priority === "medium").sort((a, b) => a.rank - b.rank);
-
-  return [...high, ...medium]
-    .slice(0, RESTOCK_SUGGESTIONS_MAX)
-    .map(({ productId, name, reason, priority }) => ({ productId, name, reason, priority }));
 }
 
 function countStockBuckets(rows: { stock_qty?: unknown; reorder_level?: unknown }[]) {
@@ -179,6 +170,7 @@ export default function DashboardPage() {
     totalProfit: 0,
     topProductsToday: [],
     restockSuggestions: [],
+    needsRestockCount: 0,
     productCount: 0,
     lowStockCount: 0,
     outOfStockCount: 0,
@@ -204,7 +196,7 @@ export default function DashboardPage() {
       ] = await Promise.all([
         supabase.from("sales").select("total_amount").gte("created_at", startIso).lte("created_at", endIso),
         supabase.from("products").select("id", { count: "exact", head: true }),
-        supabase.from("products").select("id, stock_qty, reorder_level"),
+        supabase.from("products").select("id, name, stock_qty, reorder_level"),
         supabase
           .from("sale_items")
           .select(profitSelect)
@@ -220,7 +212,7 @@ export default function DashboardPage() {
       const topProductsToday = topProductsFromSaleItems(profitRowsTyped, 5);
       const rows = products ?? [];
       const { lowStockCount, outOfStockCount } = countStockBuckets(rows);
-      const restockSuggestions = restockSuggestionsFromTopAndStock(topProductsToday, rows);
+      const { suggestions: restockSuggestions, total: needsRestockCount } = needsRestockFromProducts(rows);
 
       setStoreName("Overview");
       setStats({
@@ -229,6 +221,7 @@ export default function DashboardPage() {
         totalProfit,
         topProductsToday,
         restockSuggestions,
+        needsRestockCount,
         productCount: productCount ?? 0,
         lowStockCount,
         outOfStockCount,
@@ -246,6 +239,7 @@ export default function DashboardPage() {
         totalProfit: 0,
         topProductsToday: [],
         restockSuggestions: [],
+        needsRestockCount: 0,
         productCount: 0,
         lowStockCount: 0,
         outOfStockCount: 0,
@@ -274,7 +268,7 @@ export default function DashboardPage() {
         .gte("created_at", startIso)
         .lte("created_at", endIso),
       supabase.from("products").select("id", { count: "exact", head: true }).eq("store_id", store.id),
-      supabase.from("products").select("id, stock_qty, reorder_level").eq("store_id", store.id),
+      supabase.from("products").select("id, name, stock_qty, reorder_level").eq("store_id", store.id),
       supabase
         .from("sale_items")
         .select(profitSelect)
@@ -291,7 +285,7 @@ export default function DashboardPage() {
     const topProductsToday = topProductsFromSaleItems(profitRowsTyped, 5);
     const rows = products ?? [];
     const { lowStockCount, outOfStockCount } = countStockBuckets(rows);
-    const restockSuggestions = restockSuggestionsFromTopAndStock(topProductsToday, rows);
+    const { suggestions: restockSuggestions, total: needsRestockCount } = needsRestockFromProducts(rows);
 
     setStats({
       todaySalesTotal,
@@ -299,6 +293,7 @@ export default function DashboardPage() {
       totalProfit,
       topProductsToday,
       restockSuggestions,
+      needsRestockCount,
       productCount: productCount ?? 0,
       lowStockCount,
       outOfStockCount,
@@ -316,9 +311,20 @@ export default function DashboardPage() {
     return () => window.removeEventListener(TINDAKO_DATA_EVENT, onRefresh);
   }, [load]);
 
+  const topProductsMaxSold = useMemo(() => {
+    const items = stats.topProductsToday;
+    if (!items.length) return 1;
+    return Math.max(...items.map((i) => i.totalSold), 1);
+  }, [stats.topProductsToday]);
+
+  const formattedDate = useMemo(() => formatDate(), []);
+
   return (
     <>
-      <AppHeader subtitle={storeName || "Overview"} />
+      <AppHeader
+        storeName={storeName.trim() || undefined}
+        subtitle={storeName.trim() ? undefined : "Overview"}
+      />
 
       <div className="flex flex-col gap-6 pb-6">
         {loading ? (
@@ -334,7 +340,7 @@ export default function DashboardPage() {
                   <p className="text-3xl font-semibold tabular-nums tracking-tight text-foreground sm:text-4xl">
                     {formatPeso(stats.todaySalesTotal)}
                   </p>
-                  <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{manilaTodayMetricsDateSubtitle()}</p>
+                  <p className="pt-1 text-sm text-muted-foreground">{formattedDate}</p>
                 </CardContent>
               </Card>
 
@@ -344,7 +350,7 @@ export default function DashboardPage() {
                   <p className="text-3xl font-semibold tabular-nums tracking-tight text-foreground sm:text-4xl">
                     {formatPeso(stats.todayProfit)}
                   </p>
-                  <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{manilaTodayMetricsDateSubtitle()}</p>
+                  <p className="pt-1 text-sm text-muted-foreground">{formattedDate}</p>
                 </CardContent>
               </Card>
             </div>
@@ -369,21 +375,57 @@ export default function DashboardPage() {
               {stats.topProductsToday.length === 0 ? (
                 <p className="mt-4 text-base leading-relaxed text-muted-foreground">No sales yet today.</p>
               ) : (
-                <ol className="mt-4 list-decimal space-y-3 pl-5 text-base leading-relaxed text-foreground">
-                  {stats.topProductsToday.map((item, index) => (
-                    <li key={item.productId} className="pl-1 marker:font-medium marker:text-muted-foreground">
-                      <span
+                <ol className="mt-4 flex list-none flex-col space-y-3 pl-0" role="list">
+                  {stats.topProductsToday.map((item, index) => {
+                    const rank = index + 1;
+                    const isFirst = index === 0;
+                    const barPct = topProductsMaxSold > 0 ? (item.totalSold / topProductsMaxSold) * 100 : 0;
+                    return (
+                      <li
+                        key={item.productId}
                         className={cn(
-                          "text-foreground",
-                          index === 0 ? "font-semibold" : "font-medium"
+                          "rounded-xl border border-neutral-200 px-4 py-3 dark:border-border",
+                          isFirst && "bg-green-50 dark:bg-green-950/20"
                         )}
                       >
-                        {item.name}
-                      </span>
-                      <span className="text-muted-foreground"> — </span>
-                      <span className="text-muted-foreground tabular-nums">{item.totalSold} sold</span>
-                    </li>
-                  ))}
+                        <div className="flex flex-wrap items-baseline justify-between gap-2 gap-y-1">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="shrink-0 tabular-nums text-xs font-medium text-muted-foreground">
+                              {rank}.
+                            </span>
+                            <span
+                              className={cn(
+                                "min-w-0 leading-snug text-foreground",
+                                isFirst ? "text-base font-semibold" : "text-sm font-medium"
+                              )}
+                            >
+                              {item.name}
+                            </span>
+                          </div>
+                          <span
+                            className={cn(
+                              "shrink-0 tabular-nums text-sm",
+                              isFirst ? "font-medium text-foreground" : "text-muted-foreground"
+                            )}
+                          >
+                            {item.totalSold} sold
+                          </span>
+                        </div>
+                        <div
+                          className="mt-2.5 h-1 w-full overflow-hidden rounded-full bg-muted/60 dark:bg-muted/40"
+                          aria-hidden
+                        >
+                          <div
+                            className={cn(
+                              "h-full max-w-full rounded-full transition-[width] duration-300 ease-out",
+                              isFirst ? "bg-green-600/35 dark:bg-green-500/30" : "bg-foreground/15 dark:bg-foreground/20"
+                            )}
+                            style={{ width: `${barPct}%` }}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ol>
               )}
             </section>
@@ -397,37 +439,41 @@ export default function DashboardPage() {
                 What to Restock
               </h2>
               <p id="what-to-restock-subtitle" className="mt-1 text-sm text-muted-foreground">
-                Based on today&apos;s sales and stock
+                Based on stock vs reorder level
               </p>
-              {stats.restockSuggestions.length === 0 ? (
-                <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-                  All good. No restock needed today.
-                </p>
+              {stats.needsRestockCount === 0 ? (
+                <p className="mt-4 text-base leading-relaxed text-muted-foreground">All good…</p>
               ) : (
-                <ol className="mt-4 list-decimal space-y-3 pl-5 text-base leading-relaxed text-foreground">
-                  {stats.restockSuggestions.map((item, index) => (
-                    <li key={item.productId} className="pl-1 marker:font-medium marker:text-muted-foreground">
-                      <span
-                        className={cn(
-                          "text-foreground",
-                          index === 0 ? "font-semibold" : "font-medium"
-                        )}
-                      >
-                        {item.name}
-                      </span>
-                      <span className="text-muted-foreground"> — </span>
-                      <span
-                        className={
-                          item.priority === "high"
-                            ? "font-medium text-foreground"
-                            : "text-muted-foreground"
-                        }
-                      >
-                        {item.reason}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
+                <>
+                  <p className="mt-4 text-base leading-relaxed text-foreground">
+                    You have {stats.needsRestockCount} {stats.needsRestockCount === 1 ? "item" : "items"} to restock.
+                  </p>
+                  <ol className="mt-3 list-decimal space-y-3 pl-5 text-base leading-relaxed text-foreground">
+                    {stats.restockSuggestions.map((item, index) => (
+                      <li key={item.productId} className="pl-1 marker:font-medium marker:text-muted-foreground">
+                        <span
+                          className={cn(
+                            "text-foreground",
+                            index === 0 ? "font-semibold" : "font-medium"
+                          )}
+                        >
+                          {item.name}
+                        </span>
+                        <span className="text-muted-foreground"> — </span>
+                        <span className="font-medium text-foreground">{item.reason}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  {stats.needsRestockCount > RESTOCK_SUGGESTIONS_MAX ? (
+                    <p className="mt-3 text-sm text-muted-foreground">
+                      Showing {RESTOCK_SUGGESTIONS_MAX} of {stats.needsRestockCount}. See{" "}
+                      <Link href="/inventory" className="font-medium text-primary underline-offset-4 hover:underline">
+                        Inventory
+                      </Link>{" "}
+                      for the full list.
+                    </p>
+                  ) : null}
+                </>
               )}
             </section>
 
@@ -449,7 +495,7 @@ export default function DashboardPage() {
               </Link>
             </Card>
 
-            <Card className="overflow-hidden">
+            <Card className="overflow-hidden bg-yellow-50 border border-yellow-200 ring-0">
               <Link
                 href="/inventory?stock=low"
                 className={cn(
@@ -469,7 +515,7 @@ export default function DashboardPage() {
               </Link>
             </Card>
 
-            <Card className="overflow-hidden">
+            <Card className="overflow-hidden bg-red-50 border border-red-200 ring-0">
               <Link
                 href="/inventory?stock=out"
                 className={cn(

@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FEEDBACK_AUTO_HIDE_MS, useAutoDismissString } from "@/hooks/use-auto-dismiss";
 import { emitTindakoDataRefresh } from "@/lib/refresh-events";
-import { completeSale } from "@/lib/supabase/mutations";
+import { createSale } from "@/lib/supabase/mutations";
+import { handleError, handleSuccess } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -171,24 +172,30 @@ export function PosCheckout({ products, productSearchQuery = "", loading = false
     clearPosFeedback();
     setPending(true);
     try {
-      const result = await completeSale(payload);
+      const result = await createSale(payload);
 
       if (result.error) {
         setMessage(result.error);
+        handleError("Sale failed", { description: result.error });
         return;
       }
 
-      const sid = result.saleId;
-      const idNote =
-        typeof sid === "string" && sid.length > 0 ? ` (ref ${sid.length > 8 ? `${sid.slice(0, 8)}…` : sid})` : "";
-      setSuccessMessage(`Sale completed successfully.${idNote} Stock updated.`);
-      setConfirmOpen(false);
+      setSuccessMessage("Sale completed successfully. Stock updated.");
       setCart({});
       setTapFeedbackId(null);
       emitTindakoDataRefresh();
       router.refresh();
+
+      handleSuccess("Sale completed successfully.", {
+        closeModal: () => setConfirmOpen(false),
+        shouldCloseOnSuccess: true,
+        description: "Stock updated.",
+        toastDelayMs: 150,
+      });
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Checkout failed unexpectedly.");
+      const msg = e instanceof Error ? e.message : "Checkout failed unexpectedly.";
+      setMessage(msg);
+      handleError("Sale failed", { description: msg });
     } finally {
       setPending(false);
     }

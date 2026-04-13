@@ -137,7 +137,13 @@ export function InventoryProductList({
                 <div className="flex flex-wrap items-start gap-2 border-t border-border/50 pt-4">
                   <ProductDialog product={p} />
                   <RestockProductButton product={p} emphasizeTrigger={emphasizeRestock} />
-                  <DeleteProductButton productId={p.id} productName={p.name} onDeleted={onProductDeleted} />
+                  <DeleteProductButton
+                    productId={p.id}
+                    productStoreId={p.store_id}
+                    saleItemsCount={p.sale_items_count}
+                    productName={p.name}
+                    onDeleted={onProductDeleted}
+                  />
                 </div>
               </CardContent>
             </Card>

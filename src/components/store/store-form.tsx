@@ -78,43 +78,46 @@ export function StoreForm({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <form
+        className="pb-6"
         onSubmit={onSubmit}
         onInput={() => {
           setError(null);
           setSuccess(null);
         }}
       >
-        <CardContent className="space-y-5">
-          {error ? (
-            <p
-              className="rounded-xl border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-sm leading-snug text-destructive dark:border-destructive/40"
-              role="alert"
-            >
-              {error}
-            </p>
-          ) : null}
-          {success ? (
-            <p
-              className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.08] px-3 py-2.5 text-sm leading-snug text-emerald-800 dark:text-emerald-100"
-              role="status"
-            >
-              {success}
-            </p>
-          ) : null}
-          <div className="space-y-1.5">
-            <Label htmlFor="name">Store name</Label>
-            <Input
-              id="name"
-              name="name"
-              required
-              value={nameValue}
-              onChange={(ev) => setNameValue(ev.target.value)}
-              placeholder="e.g. Aling Nena Sari-Sari"
-              className="min-h-11 text-base"
-            />
+        <CardContent>
+          <div className="space-y-4">
+            {error ? (
+              <p
+                className="rounded-xl border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-sm leading-snug text-destructive dark:border-destructive/40"
+                role="alert"
+              >
+                {error}
+              </p>
+            ) : null}
+            {success ? (
+              <p
+                className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.08] px-3 py-2.5 text-sm leading-snug text-emerald-800 dark:text-emerald-100"
+                role="status"
+              >
+                {success}
+              </p>
+            ) : null}
+            <div className="space-y-1.5">
+              <Label htmlFor="name">Store name</Label>
+              <Input
+                id="name"
+                name="name"
+                required
+                value={nameValue}
+                onChange={(ev) => setNameValue(ev.target.value)}
+                placeholder="e.g. Aling Nena Sari-Sari"
+                className="min-h-11 text-base"
+              />
+            </div>
           </div>
         </CardContent>
-        <CardFooter>
+        <CardFooter className="mt-6">
           <Button type="submit" size="lg" className="min-h-12 w-full" disabled={pending}>
             {pending ? "Saving…" : submitLabel}
           </Button>
