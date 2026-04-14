@@ -37,8 +37,13 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col">
-        {children}
+      <body className="min-h-screen">
+        <div className="flex min-h-screen flex-col">
+          <main className="flex-1">{children}</main>
+          <footer className="py-6 pb-24 text-center text-xs text-muted-foreground">
+            © 2026 TindaKo · Built by <span className="font-medium">roeru-madrid</span>
+          </footer>
+        </div>
         <Toaster />
       </body>
     </html>
